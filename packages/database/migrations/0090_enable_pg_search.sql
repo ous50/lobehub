@@ -8,7 +8,13 @@
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_search') THEN
-    CREATE EXTENSION IF NOT EXISTS pg_search;
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS pg_search;
+    EXCEPTION WHEN insufficient_privilege THEN
+      -- Neon still advertises deprecated extensions but rejects their installation with 42501.
+      -- The startup guard requires pg_like or elasticsearch when pg_search is not installed.
+      RAISE NOTICE 'pg_search installation is not permitted; skipping BM25 search setup: %', SQLERRM;
+    END;
   ELSE
     RAISE NOTICE 'pg_search is not available on this database; skipping BM25 search setup';
   END IF;
