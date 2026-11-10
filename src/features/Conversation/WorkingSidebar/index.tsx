@@ -1,7 +1,15 @@
 import { getWorkingDirEffectivePath } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
-import { ActionIcon, type DropdownItem, DropdownMenu, Flexbox, Icon, Skeleton } from '@lobehub/ui';
-import { createStaticStyles, cssVar } from '@lobehub/ui';
+import {
+  ActionIcon,
+  createStaticStyles,
+  cssVar,
+  type DropdownItem,
+  DropdownMenu,
+  Flexbox,
+  Icon,
+  Skeleton,
+} from '@lobehub/ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
 import {
   BoxesIcon,
@@ -13,7 +21,6 @@ import {
   GlobeIcon,
   MessageCircleIcon,
   PanelRightCloseIcon,
-  PanelsTopLeftIcon,
   PlusIcon,
   SearchIcon,
   Settings2Icon,
@@ -34,7 +41,6 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useBusinessWorkingSidebarTabs } from '@/business/client/features/WorkingSidebarTabs';
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import { DESKTOP_HEADER_ICON_SMALL_SIZE } from '@/const/layoutTokens';
 import { isDesktop } from '@/const/version';
@@ -85,11 +91,13 @@ import { CANVAS_MIN_WIDTH, MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, OVERVIEW_PANEL_WIDT
 import Overview from './Overview';
 import { getStatusDeviceId } from './Overview/overviewData';
 import OverviewSlot from './OverviewSlot';
-import PullRequest from './PullRequest';
+import PullRequestSidebarTab from './PullRequest/SidebarTab';
 import { useLinkedPullRequest } from './PullRequest/useLinkedPullRequest';
 import ResourcesSection from './ResourcesSection';
 import Review from './Review';
 import { TopicSearchPane } from './Search';
+import { useExtraWorkingSidebarTabs } from './useExtraWorkingSidebarTabs';
+import { useRetainAfterHide } from './useRetainAfterHide';
 import { useSandboxFilesDirectory } from './useSandboxFilesDirectory';
 import { useTabContextMenuItems } from './useTabContextMenuItems';
 import WorkspaceTab from './WorkspaceTab';
@@ -187,6 +195,8 @@ const PINNED_TABS_STORAGE_KEY = 'lobechat-working-sidebar-pinned-tabs-v1';
 const OVERVIEW_TRANSITION = { duration: 0.25, ease: [0.32, 0.72, 0, 1] } as const;
 // Two-pane Review (diff list + file-tree rail) is cramped below this.
 const TWO_PANE_MIN_WIDTH = 560;
+/** How long a collapsed panel keeps Review mounted for a quick reopen. */
+const REVIEW_RETAIN_MS = 30_000;
 
 interface AgentWorkingSidebarProps {
   /**
@@ -308,14 +318,23 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
   const targetDeviceId = resolveTargetDeviceId(agencyConfig, currentDeviceId, {
     workspaceScoped,
   });
-  const repoType = useRepoType(workingDirectory, targetDeviceId);
+  const topicWorkingDirectoryConfig = useChatStore(
+    (s) => topicSelectors.currentTopicMetadata(s)?.workingDirectoryConfig,
+  );
+  // A topic on its own worktree matches no device `workingDirs` entry (the
+  // device keeps one `activeWorktree` per repo), and a remote device can't be
+  // probed — so fall back to the repoType the topic persisted for that checkout,
+  // or Review disappears on web.
+  const deviceRepoType = useRepoType(workingDirectory, targetDeviceId);
+  const repoType =
+    deviceRepoType ??
+    (getWorkingDirEffectivePath(topicWorkingDirectoryConfig) === workingDirectory
+      ? topicWorkingDirectoryConfig?.repoType
+      : undefined);
   // The SOURCE repo, not the checkout — same fallback chain as
   // WorkingDirectorySection: a persisted-worktree topic has no matching
   // `workingDirs` entry, and committing the worktree path as sourcePath would
   // rewrite the topic's repo source (see that component's comment).
-  const topicWorkingDirectoryConfig = useChatStore(
-    (s) => topicSelectors.currentTopicMetadata(s)?.workingDirectoryConfig,
-  );
   const topicDeviceId = useChatStore((s) => topicSelectors.currentTopicMetadata(s)?.boundDeviceId);
   const deviceDirs = useDeviceStore(deviceSelectors.getDeviceWorkingDirs(targetDeviceId));
   const sourceWorkingDirectory = useMemo(() => {
@@ -416,7 +435,12 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
     {},
   );
 
-  const businessTabs = useBusinessWorkingSidebarTabs({ activeAgentId, topicId });
+  const extraTabs = useExtraWorkingSidebarTabs({
+    activeAgentId,
+    environmentWorkingDirectory,
+    remoteDeviceId,
+    topicId,
+  });
   const commentsAvailable = !!workspaceId && !!topicId;
   const currentCommentTopicId =
     currentPortalView?.type === PortalViewType.TopicComments ||
@@ -475,15 +499,11 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
             },
           ]
         : []),
-      ...businessTabs.map((tab) => ({
-        icon: PanelsTopLeftIcon,
-        key: tab.key,
-        label: tab.label,
-      })),
+      ...extraTabs,
     ],
     [
       browserAvailable,
-      businessTabs,
+      extraTabs,
       commentsAvailable,
       filesAvailable,
       isHetero,
@@ -510,8 +530,8 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
   const pinnedTabsAgentKey = activeAgentId ?? 'default';
   const defaultOpenedTabs = useMemo(
     () =>
-      [filesAvailable ? 'files' : undefined, 'skills', isHetero ? undefined : 'documents'].filter(
-        (tab): tab is string => Boolean(tab) && isAvailableTab(tab!),
+      [filesAvailable && 'files', 'skills', isHetero ? 'claudeMemory' : 'documents'].filter(
+        (tab): tab is string => !!tab && isAvailableTab(tab),
       ),
     [filesAvailable, isAvailableTab, isHetero],
   );
@@ -830,6 +850,8 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
     portalWidth: portalOpen ? portalWidth : 0,
   });
   const fits = widthBudget >= minDisplayWidth;
+  const panelVisible = !!showRightPanel && fits;
+  const retainReview = useRetainAfterHide(panelVisible, REVIEW_RETAIN_MS);
   const overviewFits = widthBudget >= MIN_PANEL_WIDTH;
   const renderWidth = Math.min(displayWidth, Math.max(widthBudget, minDisplayWidth));
   // Also cap the drag range so releasing a drag can never persist a width that
@@ -880,7 +902,7 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
       'skills',
       'documents',
       'web',
-      ...businessTabs.map((tab) => tab.key),
+      ...extraTabs.map((tab) => tab.key),
     ]);
     const toolChildren = [itemOf('browser')].filter((item): item is DropdownItem => Boolean(item));
     if (terminalAvailable) {
@@ -910,7 +932,7 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
       );
   }, [
     availableTabs,
-    businessTabs,
+    extraTabs,
     openBrowserTab,
     openTab,
     openedTabs,
@@ -920,13 +942,15 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
     toggleTerminalPanel,
   ]);
 
-  const overviewWidth = Math.min(OVERVIEW_PANEL_WIDTH, widthBudget - 32);
+  // The floating card keeps a 16px margin on each side.
+  const overviewGutter = 32;
+  const overviewWidth = Math.min(OVERVIEW_PANEL_WIDTH, widthBudget - overviewGutter);
   const overviewPanel = (
     <OverviewSlot>
       <AnimatePresence initial={false}>
         {showWorkingOverview && overviewFits && (
           <m.div
-            animate={{ width: overviewWidth + 32 }}
+            animate={{ width: overviewWidth + overviewGutter }}
             className={styles.overviewSlot}
             exit={{ transition: overviewExitTransition, width: 0 }}
             initial={{ width: 0 }}
@@ -1080,34 +1104,36 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
                     </Suspense>
                   </Flexbox>
                 )}
-                {reviewAvailable && showRightPanel && fits && activeTab === 'review' && (
-                  <Flexbox className={styles.pane}>
-                    <Review
-                      active
-                      composerTarget={composerTarget}
-                      deviceId={remoteDeviceId}
-                      showTree={showReviewTree}
-                      workingDirectory={workingDirectory}
-                      onToggleTree={() => setShowReviewTree((v) => !v)}
-                    />
-                  </Flexbox>
-                )}
-                {pullRequest && workingDirectory && (
-                  <Activity mode={showRightPanel && activeTab === 'pr' ? 'visible' : 'hidden'}>
+                {/* Switching tabs unmounts Review to release its diff DOM (#18984).
+                    Collapsing the panel hides it for REVIEW_RETAIN_MS first: remounting
+                    all diffs and the tree on a quick reopen stalls the open animation
+                    for ~200ms. */}
+                {reviewAvailable && activeTab === 'review' && retainReview && (
+                  <Activity mode={panelVisible ? 'visible' : 'hidden'}>
                     <Flexbox className={styles.pane}>
-                      <PullRequest
-                        active={!!showRightPanel && activeTab === 'pr'}
-                        {...pullRequestLink}
+                      <Review
+                        active={panelVisible}
+                        composerTarget={composerTarget}
                         deviceId={remoteDeviceId}
-                        key={JSON.stringify([remoteDeviceId, workingDirectory, pullRequest.number])}
-                        number={pullRequest.number}
-                        summary={pullRequest}
-                        url={pullRequest.url}
+                        showTree={showReviewTree}
                         workingDirectory={workingDirectory}
-                        onOpenTab={openTab}
+                        onToggleTree={() => setShowReviewTree((v) => !v)}
                       />
                     </Flexbox>
                   </Activity>
+                )}
+                {pullRequest && workingDirectory && (
+                  // The PR tab renders at MIN_PANEL_WIDTH: it fits exactly when Overview does.
+                  <PullRequestSidebarTab
+                    {...pullRequestLink}
+                    active={!!showRightPanel && activeTab === 'pr'}
+                    canShow={overviewFits}
+                    className={styles.pane}
+                    deviceId={remoteDeviceId}
+                    pullRequest={pullRequest}
+                    workingDirectory={workingDirectory}
+                    onOpenTab={openTab}
+                  />
                 )}
                 <DynamicTabPanes
                   activeTab={activeTab}
@@ -1128,7 +1154,7 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
                     );
                   }}
                 />
-                {businessTabs.map((tab) => (
+                {extraTabs.map((tab) => (
                   <Flexbox
                     className={activeTab === tab.key ? styles.pane : styles.paneHidden}
                     key={tab.key}

@@ -9,6 +9,8 @@ import { isAbortError } from '@/server/services/agentRuntime/abort';
 
 import type { ExecRunContext, InternalExecAgentParams } from '../types';
 import type { ApprovalClaimState } from './approvalResume';
+import type { OperationInitRequest } from './operationInit';
+import { buildPendingInitSlots, resolveOperationInitSlots } from './operationInitSlots';
 import type { OperationPrepResult } from './operationPrep';
 import { traceStartStage } from './sendTracing';
 import type { ToolDiscoveryResult } from './toolDiscovery';
@@ -24,6 +26,16 @@ export interface StartOperationDeps {
   withholdGatewayToken: boolean;
   workspaceId?: string;
 }
+
+/** What the init produced, or the request the step-0 worker will run it from. */
+export type StartOperationInit =
+  | {
+      discovery: ToolDiscoveryResult;
+      /** Final runtime context — base prep context with 16b/16c overrides applied. */
+      initialContext: OperationPrepResult['initialContext'];
+      prep: OperationPrepResult;
+    }
+  | { pendingRequest: OperationInitRequest };
 
 export interface StartOperationInput {
   /** See {@link InternalExecAgentParams.acceptsFileWorks}. */
@@ -42,27 +54,32 @@ export interface StartOperationInput {
   /** Tri-state disabled plugin identifiers, kept on the world slot for the context rules. */
   disabledPluginIds?: string[];
   discordContext?: any;
-  discovery: ToolDiscoveryResult;
   enableExpertise: boolean;
   evalContext?: InternalExecAgentParams['evalContext'];
   evalRuntime?: InternalExecAgentParams['evalRuntime'];
   hooks?: InternalExecAgentParams['hooks'];
   includeFinalState?: boolean;
-  /** Final runtime context — base prep context with 16b/16c overrides applied. */
-  initialContext: OperationPrepResult['initialContext'];
+  init: StartOperationInit;
   initialLlmCalls?: number;
   initialStepCount?: number;
   /** Relay executor the calling client declared; lands on `state.host.llmExecutor`. */
   llmExecutor?: InternalExecAgentParams['llmExecutor'];
   maxSteps?: number;
   onOperationCreated?: InternalExecAgentParams['onOperationCreated'];
+  /**
+   * Called once the first step is queued. A later startup failure (a marker
+   * write) still returns `success: false` while the run executes, so ownership
+   * that follows the run (its concurrency slot) must transfer here.
+   */
+  onScheduled?: () => void;
   operationId: string;
   operationTaskId?: string;
   parentOperationId?: string;
-  prep: OperationPrepResult;
   providedApprovalResolutionRequestId?: string;
   queueRetries?: number;
   queueRetryDelay?: string;
+  /** See {@link InternalExecAgentParams.reservedOperationId}. */
+  reservedOperation?: boolean;
   signal?: AbortSignal;
   stream?: boolean;
   topicStartOwnerOperationId?: string;
@@ -114,22 +131,21 @@ export const startOperation = async (
     clientIp,
     disabledPluginIds,
     discordContext,
-    discovery,
     enableExpertise,
     evalContext,
     evalRuntime,
     hooks,
-    initialContext,
+    init,
     initialLlmCalls,
     initialStepCount,
     maxSteps,
     operationId,
     operationTaskId,
     parentOperationId,
-    prep,
     providedApprovalResolutionRequestId,
     queueRetries,
     queueRetryDelay,
+    reservedOperation,
     signal,
     stream,
     topicStartOwnerOperationId,
@@ -138,7 +154,6 @@ export const startOperation = async (
     userInterventionConfig,
     userTimezone,
   } = input;
-  const { audio, video, vision } = discovery.modelMediaCapabilities;
   // A builder topic continued from another surface (scope `main`, an approval
   // resume) arrives without the group it edits; the group the topic was opened
   // on stands in, so the run still knows its target.
@@ -146,14 +161,8 @@ export const startOperation = async (
     (appContext?.scope === 'group_agent_builder' ? appContext.editingGroupId : undefined) ||
     topicEditingGroupId;
 
-  log(
-    'execAgent: creating operation %s — agentDocuments=%d, knowledgeBases=%s, tools=%d, skills=%d',
-    operationId,
-    discovery.hasAgentDocuments ? 'yes' : 0,
-    discovery.hasEnabledKnowledgeBases,
-    discovery.tools?.length ?? 0,
-    prep.operationSkillSet?.skills?.length ?? 0,
-  );
+  const pendingInitRequest = 'pendingRequest' in init ? init.pendingRequest : undefined;
+  log('execAgent: creating operation %s (deferred init: %s)', operationId, !!pendingInitRequest);
 
   // Wrap in try-catch to handle operation startup failures (e.g., QStash unavailable)
   // If createOperation fails, we still have valid messages that need error info
@@ -190,16 +199,23 @@ export const startOperation = async (
     const inheritedEditingGroupId = approvalSourceOperationId
       ? await deps.agentRuntimeService.getOperationEditingGroupId(approvalSourceOperationId)
       : undefined;
+    const { modelCapabilities, ...initSlots } =
+      'pendingRequest' in init
+        ? buildPendingInitSlots({
+            assistantMessageId,
+            operationId,
+            parentMessageId: userMessageId ?? parentMessageId ?? '',
+          })
+        : await resolveOperationInitSlots(init);
     const result = await deps.agentRuntimeService.createOperation({
+      ...initSlots,
+      pendingInitRequest,
       acceptsFileWorks: fileWorksAccepted,
       acceptsMemberRuntimeEnd: memberRuntimeEndAccepted,
       clientProtocol: input.clientProtocol,
       includeFinalState: input.includeFinalState,
       llmExecutor,
-      activeDeviceId: discovery.activeDeviceId,
-      activeDeviceScope: discovery.activeDeviceScope,
       agentConfig,
-      agentGroup: discovery.operationAgentGroup,
       agentShareVisitor: shareGate
         ? {
             agentId: shareGate.agentId,
@@ -240,11 +256,7 @@ export const startOperation = async (
             visitorUserId: shareGate.visitorUserId,
           }
         : undefined,
-      deviceSystemInfo:
-        Object.keys(prep.deviceSystemInfo).length > 0 ? prep.deviceSystemInfo : undefined,
       disabledPluginIds,
-      executionPlan: discovery.executionPlan,
-      searchDecision: discovery.searchDecision,
       userTimezone,
       appContext: {
         // Background self-iteration runs execute under a builtin slug (so they
@@ -254,6 +266,7 @@ export const startOperation = async (
         // context (state.origin.agentId) targets the reviewed agent; ordinary
         // runs (no marker) fall back to the resolved executing agent.
         agentId: appContext?.agentSignal?.agentId ?? resolvedAgentId,
+        assistantMessageId,
         // Propagate the originating request's client IP / user agent into
         // state.metadata (via the `...appContext` spread in createOperation) so
         // downstream LLM-call metadata can carry them for auditing and spend
@@ -310,16 +323,9 @@ export const startOperation = async (
       botPlatformContext,
       deviceAccessPolicy: { canUseDevice, reason: deviceAccessReason },
       discordContext,
-      // Run context the context engine injects into the system message —
-      // carried on the operation like `expertise`, not on the agent config.
-      connectorOwnershipNote: discovery.connectorOwnershipNote,
       evalContext,
       evalRuntime,
       enableExpertise,
-      expertise: prep.expertise,
-      projectInstructions: prep.projectInstructions,
-      initialContext,
-      initialMessages: prep.allMessages,
       initialLlmCalls,
       initialStepCount,
       ...(providedApprovalResolutionRequestId && approvalSourceOperationId
@@ -339,45 +345,21 @@ export const startOperation = async (
           }
         : {}),
       maxSteps,
-      modelRuntimeConfig: {
-        mediaCapabilities: {
-          ...(typeof audio === 'boolean' && { audio }),
-          ...(typeof video === 'boolean' && { video }),
-          ...(typeof vision === 'boolean' && { vision }),
-        },
-        // Read once during discovery: every LLM attempt of this run resolves its
-        // parameters from here, so no step re-reads the bank, the user's model
-        // row or the reasoning config — and none of them can change mid-run.
-        modelFacts: discovery.modelFacts,
-        model,
-        provider,
-      },
+      modelRuntimeConfig: { ...modelCapabilities, model, provider },
       hooks,
-      // Listed once during discovery: every step renders {{CREDS_LIST}} from
-      // here instead of asking the Market API again. Awaited only now, so the
-      // read overlapped with the operation preparation that ran in between.
-      operationCredentials: await discovery.credentialFactsPromise,
       operationId,
       parentOperationId,
+      reservedOperation,
       signal,
       queueRetries,
       queueRetryDelay,
       stream,
-      toolSet: {
-        activatableToolIds: prep.activatableToolIds,
-        enabledToolIds: discovery.toolsResult.enabledToolIds,
-        executorMap: discovery.toolExecutorMap,
-        manifestMap: discovery.toolManifestMap,
-        sourceMap: discovery.toolSourceMap,
-        tools: discovery.tools,
-      },
-      operationSkillSet: prep.operationSkillSet,
       userId: deps.userId,
       userInterventionConfig,
-      userMemory: prep.userMemory,
       workspaceId: deps.workspaceId,
     });
     approvalClaim.continuationStarted = true;
+    if (result.autoStarted) input.onScheduled?.();
 
     // The approval continuation is a fresh operation. Legacy direct callers
     // retire the old parked runtime here, only after createOperation has

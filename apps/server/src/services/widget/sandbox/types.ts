@@ -1,7 +1,8 @@
 import type { WidgetRuntime } from '@lobechat/types';
+import { WIDGET_MAX_TIMEOUT_MS } from '@lobechat/widget-spec';
 
 /** Upper bound any provider accepts for one script execution. */
-export const WIDGET_SANDBOX_MAX_TIMEOUT_MS = 120_000;
+export const WIDGET_SANDBOX_MAX_TIMEOUT_MS = WIDGET_MAX_TIMEOUT_MS;
 export const WIDGET_SANDBOX_DEFAULT_TIMEOUT_MS = 30_000;
 /** Extra time a sandbox request may take beyond the script timeout (cold start, upload). */
 export const WIDGET_SANDBOX_REQUEST_OVERHEAD_MS = 60_000;
@@ -78,18 +79,37 @@ export interface WidgetSandboxRunner {
 }
 
 export type WidgetSandboxErrorCode =
-  'SANDBOX_BAD_REQUEST' | 'SANDBOX_ERROR' | 'SANDBOX_NOT_CONFIGURED' | 'SANDBOX_UNAUTHORIZED';
+  | 'SANDBOX_BAD_REQUEST'
+  | 'SANDBOX_BUSY'
+  | 'SANDBOX_ERROR'
+  | 'SANDBOX_NOT_CONFIGURED'
+  | 'SANDBOX_UNAUTHORIZED';
 
-/** The sandbox could not execute the script at all (as opposed to the script failing). */
+/**
+ * The sandbox could not execute the script at all (as opposed to the script failing).
+ *
+ * `SANDBOX_BUSY` is the one transient code: the actor's account is at its
+ * concurrency or rate limit and the same request will run once a slot frees
+ * up. `retryAfterMs` says when that is expected.
+ */
 export class WidgetSandboxError extends Error {
+  public readonly retryAfterMs?: number;
+
   constructor(
     public readonly code: WidgetSandboxErrorCode,
     message: string,
+    options: { retryAfterMs?: number } = {},
   ) {
     super(message);
     this.name = 'WidgetSandboxError';
+    this.retryAfterMs = options.retryAfterMs;
   }
 }
+
+export const isWidgetSandboxBusy = (
+  error: unknown,
+): error is WidgetSandboxError & { code: 'SANDBOX_BUSY' } =>
+  error instanceof WidgetSandboxError && error.code === 'SANDBOX_BUSY';
 
 export const clampSandboxTimeout = (timeoutMs?: number) => {
   if (!timeoutMs || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {

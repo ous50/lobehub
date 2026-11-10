@@ -16,6 +16,7 @@ import type { ConnectorToolModel } from '@/database/models/connectorTool';
 import type { MessageModel } from '@/database/models/message';
 import type { PluginModel } from '@/database/models/plugin';
 import type { TopicModel } from '@/database/models/topic';
+import { appEnv } from '@/envs/app';
 import type { AgentConfigWithId } from '@/server/services/agent';
 import type { AgentDocumentsService } from '@/server/services/agentDocuments';
 import type { AgentRuntimeService } from '@/server/services/agentRuntime';
@@ -26,17 +27,25 @@ import type { MarketService } from '@/server/services/market';
 
 import { createRunFacts, type RunFacts } from '../runFacts';
 import { applyShareGateToAgentConfig } from '../shareGate';
+import { assertAgentRelayHop } from '../sourceAttribution';
 import type { ExecRunContext, InternalExecAgentParams } from '../types';
 import type { ApprovalClaimState } from './approvalResume';
 import { claimApprovalResume, tryReuseInterventionContinuation } from './approvalResume';
+import { isDeferredInitEnabled, shouldDeferOperationInit } from './deferInitGate';
 import { dispatchHeteroAgent } from './heteroDispatch';
-import { buildOperationInitRequest, runOperationInit } from './operationInit';
+import {
+  buildOperationInitRequest,
+  runOperationInit,
+  toPersistedInitRequest,
+} from './operationInit';
 import { createHistoryMessagesLoader } from './operationPrep';
 import { resolveRunAgentConfig } from './resolveRunAgentConfig';
 import { loadResumeParentMessage } from './resumeParent';
+import { bindRunFee, claimRunFee, type RunFeeClaim, shouldHoldRunFee } from './runFee';
 import { resolveRunSettings } from './runSettings';
+import { bindRunSlot, claimRunSlot, resolveRunSlotPolicy, type RunSlotClaim } from './runSlot';
 import { traceSendStage } from './sendTracing';
-import { startOperation } from './startOperation';
+import { startOperation, type StartOperationInit } from './startOperation';
 import { bindTopicWorkingDirectory } from './topicWorkingDirectory';
 import { setupTurn } from './turnSetup';
 
@@ -86,6 +95,8 @@ export const execAgentTurn = async (
   deps: ExecAgentTurnDeps,
   params: InternalExecAgentParams,
   approvalClaim: ApprovalClaimState,
+  runSlot: RunSlotClaim = {},
+  runFee: RunFeeClaim = {},
 ): Promise<ExecAgentResult> => {
   const {
     additionalPluginIds,
@@ -102,6 +113,7 @@ export const execAgentTurn = async (
     clientIp,
     userAgent,
     deviceId: requestedDeviceId,
+    requireDevice,
     localDeviceId,
     botPlatformContext,
     discordContext,
@@ -191,6 +203,19 @@ export const execAgentTurn = async (
   // Determine the identifier to use (agentId takes precedence)
   const identifier = agentId || slug!;
 
+  if (params.reservedOperationId) {
+    const reserved = await deps.agentOperationModel.findById(params.reservedOperationId);
+    if (
+      !reserved ||
+      reserved.status !== 'idle' ||
+      reserved.agentId !== agentId ||
+      reserved.topicId !== appContext?.topicId ||
+      reserved.userId !== deps.userId ||
+      (reserved.workspaceId ?? undefined) !== deps.workspaceId
+    )
+      throw new Error('The reserved operation does not match this execution');
+  }
+
   log('execAgent: identifier=%s, prompt=%s', identifier, prompt.slice(0, 50));
 
   const operationTaskId = await deps.resolveOperationTaskId(taskId ?? appContext?.taskId);
@@ -252,6 +277,7 @@ export const execAgentTurn = async (
       {
         appContext,
         chatConfigOverride,
+        agentConfigSnapshot: params.agentConfigSnapshot,
         identifier,
         instructions,
         modelOverride,
@@ -267,6 +293,16 @@ export const execAgentTurn = async (
   // Applied to the resolved config before anything downstream (knowledge
   // flags, tools engine, context snapshot) reads it.
   if (shareGate) applyShareGateToAgentConfig(agentConfig);
+
+  // Before the turn writes any row: a refused send leaves nothing behind.
+  await claimRunSlot(runSlot, {
+    policy: resolveRunSlotPolicy(params, { agentConfig, workspaceId: deps.workspaceId }),
+    userId: deps.userId,
+  });
+  await claimRunFee(runFee, {
+    hold: shouldHoldRunFee(params, { workspaceId: deps.workspaceId }),
+    userId: deps.userId,
+  });
 
   let resumeParentMessage: Awaited<ReturnType<MessageModel['findById']>>;
 
@@ -372,10 +408,12 @@ export const execAgentTurn = async (
   // Agent → agent attribution: resolve the launching run's agent into a
   // display snapshot once, before the turn rows exist, so the persisted user
   // message carries a self-contained sender block.
-  const agentSender = await deps.resolveSourceAgentSnapshot(
-    resolvedAgentId,
-    params.sourceOperationId,
-  );
+  const agentSender =
+    params.agentSender ??
+    (await deps.resolveSourceAgentSnapshot(resolvedAgentId, params.sourceOperationId));
+  // Two agents told to report back to each other would otherwise wake each
+  // other forever; past the bound a person has to step in.
+  assertAgentRelayHop(agentSender);
 
   // Stage 3 + shared turn setup — topic creation/reuse (with the pinned
   // model), device-access policy, hetero detection, attachment ingestion, and
@@ -412,6 +450,7 @@ export const execAgentTurn = async (
         prompt,
         providerOverride,
         requestedDeviceId,
+        requireDevice,
         resolvedAgentId,
         resume,
         runFromHistory,
@@ -488,7 +527,7 @@ export const execAgentTurn = async (
   };
 
   if (isHeteroAgent) {
-    return dispatchHeteroAgent(
+    const heteroResult = await dispatchHeteroAgent(
       {
         bindTopicWorkingDirectory: (p) =>
           bindTopicWorkingDirectory({ topicModel: deps.topicModel }, p),
@@ -513,7 +552,13 @@ export const execAgentTurn = async (
         maxSteps,
         memberDeviceOverride,
         operationTaskId,
-        onOperationCreated: params.onOperationCreated,
+        // The hetero run settles its fee on `heteroFinish` under this id, so the
+        // fee moves to it as soon as the durable operation row exists.
+        onOperationCreated: async (operationId) => {
+          await bindRunFee(runFee, deps.userId, operationId);
+          await params.onOperationCreated?.(operationId);
+        },
+        reservedOperationId: params.reservedOperationId,
         parentOperationId,
         pinnedHeterogeneousTopicModel: turn.pinnedHeterogeneousTopicModel,
         pinnedHeterogeneousTopicSources: turn.pinnedHeterogeneousTopicSources,
@@ -524,6 +569,12 @@ export const execAgentTurn = async (
         topicStartOwnerOperationId: params.topicStartOwnerOperationId,
       },
     );
+    // A returned dispatch is the run's from here: `heteroFinish` settles a
+    // started run and a refused dispatch settles its error through the same
+    // completion, so neither gives the fee back here. A dispatch that throws
+    // leaves it unstarted, and `execAgent` releases the fee.
+    runFee.handedOff = true;
+    return heteroResult;
   }
 
   // 4. Fetch user settings (memory config + timezone)
@@ -567,7 +618,11 @@ export const execAgentTurn = async (
 
   // 15. Generate operation ID: op_{timestamp}_{agentId}_{topicId}_{random}
   const operationId =
-    continuationOperationId ?? `op_${Date.now()}_${resolvedAgentId}_${topicId}_${nanoid(8)}`;
+    params.reservedOperationId ??
+    continuationOperationId ??
+    `op_${Date.now()}_${resolvedAgentId}_${topicId}_${nanoid(8)}`;
+  await bindRunSlot(runSlot, deps.userId, operationId);
+  await bindRunFee(runFee, deps.userId, operationId);
 
   // Stages 5–18 — the run's init: the tool surface, the message/context
   // assembly, and the human decision a resumed approval turns into the first
@@ -584,71 +639,97 @@ export const execAgentTurn = async (
     disableSelfFeedbackIntentTool: params.disableSelfFeedbackIntentTool,
     disableTools: params.disableTools,
     ephemeralUserMessage,
+    evalAllowedTools: evalRuntime?.allowedTools,
+    evalConnectorSnapshots: evalRuntime?.connectorSnapshots,
+    evalMemory: evalRuntime?.memory,
     exclusivePluginIds,
+    existingMessageIds,
     files,
     functionTools,
     globalMemoryEnabled,
     hasMentionedAgents,
     isFixedDeviceTarget: turn.isFixedDeviceTarget,
     localDeviceId,
+    requireDevice,
     mentionedAgents,
     parentMessageId,
+    prompt,
+    requestedTopicId: appContext?.topicId ?? undefined,
     requestTrigger: requestTriggerMetadata.trigger,
     requestedDeviceId: turn.requestedDeviceId,
     resumeApproval,
     resumeApprovalPlugin,
     resumeApprovals,
+    resume,
     resumeFromHistory: runFromHistory,
     resumeToolResult: resolvedToolResult,
     runAttachments,
     selectedSkillIds,
     selectedToolIds,
     topicBoundDeviceId: turn.topicBoundDeviceId,
+    viewedGoal: appContext?.viewedGoal,
   });
 
-  const { discovery, initialContext, prep } = await traceSendStage('operation_init', () =>
-    runOperationInit(
-      {
-        agentDocumentsService: deps.agentDocumentsService,
-        agentModel: deps.agentModel,
-        bindTopicWorkingDirectory: (p) =>
-          bindTopicWorkingDirectory({ topicModel: deps.topicModel }, p),
-        composioService: deps.composioService,
-        connectorModel: deps.connectorModel,
-        connectorToolModel: deps.connectorToolModel,
-        db: deps.db,
-        getMarketService: () => deps.getMarketService(runFacts),
-        loadHistoryMessages,
-        messageModel: deps.messageModel,
-        pluginModel: deps.pluginModel,
-        readFileContent: async (fileId) =>
-          (
-            await new DocumentService(deps.db, deps.userId, deps.workspaceId).parseFile(
-              fileId,
-              shareGate ? agentShareFileAccessScope(shareGate) : ordinaryFileAccessScope,
-            )
-          ).content ?? undefined,
-        throwIfExecutionAborted,
-        topicModel: deps.topicModel,
-        userId: deps.userId,
-        workspaceId: deps.workspaceId,
-      },
-      runContext,
-      initRequest,
-      operationId,
-    ),
+  // A plain chat send returns here and leaves the init to the step-0 worker.
+  const deferInit = await shouldDeferOperationInit(
+    {
+      autoStart,
+      hasOrchestration: !!(
+        appContext?.agentSignal ||
+        appContext?.groupId ||
+        appContext?.isSubAgent ||
+        botContext ||
+        botPlatformContext ||
+        continuationOperationId ||
+        discordContext ||
+        evalContext ||
+        evalRuntime ||
+        params.llmExecutor ||
+        params.reservedOperationId ||
+        params.topicStartOwnerOperationId ||
+        parentOperationId ||
+        shareGate
+      ),
+      queueRuntimeEnabled: appEnv.enableQueueAgentRuntime === true,
+      request: initRequest,
+      trigger,
+    },
+    () => isDeferredInitEnabled(deps.userId),
   );
-
-  // 17. Log final operation parameters summary
-  log(
-    'execAgent: creating operation %s with params: model=%s, provider=%s, tools=%d, messages=%d, manifests=%d',
-    operationId,
-    model,
-    provider,
-    discovery.tools?.length ?? 0,
-    prep.allMessages.length,
-    Object.keys(discovery.toolManifestMap).length,
-  );
+  const init: StartOperationInit = deferInit
+    ? { pendingRequest: toPersistedInitRequest(initRequest) }
+    : await traceSendStage('operation_init', () =>
+        runOperationInit(
+          {
+            agentDocumentsService: deps.agentDocumentsService,
+            agentModel: deps.agentModel,
+            bindTopicWorkingDirectory: (p) =>
+              bindTopicWorkingDirectory({ topicModel: deps.topicModel }, p),
+            composioService: deps.composioService,
+            connectorModel: deps.connectorModel,
+            connectorToolModel: deps.connectorToolModel,
+            db: deps.db,
+            getMarketService: () => deps.getMarketService(runFacts),
+            loadHistoryMessages,
+            messageModel: deps.messageModel,
+            pluginModel: deps.pluginModel,
+            readFileContent: async (fileId) =>
+              (
+                await new DocumentService(deps.db, deps.userId, deps.workspaceId).parseFile(
+                  fileId,
+                  shareGate ? agentShareFileAccessScope(shareGate) : ordinaryFileAccessScope,
+                )
+              ).content ?? undefined,
+            throwIfExecutionAborted,
+            topicModel: deps.topicModel,
+            userId: deps.userId,
+            workspaceId: deps.workspaceId,
+          },
+          runContext,
+          initRequest,
+          operationId,
+        ),
+      );
 
   // Claim the child slot on the supervisor's runningOperation marker LAST,
   // immediately before startup. The marker vanishes when the supervisor is
@@ -691,7 +772,7 @@ export const execAgentTurn = async (
 
   // 19. Create the operation via AgentRuntimeService, persist the reconnect
   // marker, and mint the gateway token (see `pipeline/startOperation`).
-  return traceSendStage('start_operation', () =>
+  const started = await traceSendStage('start_operation', () =>
     startOperation(
       {
         agentRuntimeService: deps.agentRuntimeService,
@@ -711,27 +792,33 @@ export const execAgentTurn = async (
         approvalSourceToolMessageIds,
         autoStart,
         onOperationCreated: params.onOperationCreated,
+        // From here the run's completion releases the slot and settles the
+        // fee; a run that never started (failed, or created without
+        // auto-start) gives both back.
+        onScheduled: () => {
+          runSlot.handedOff = true;
+          runFee.handedOff = true;
+        },
         botContext,
         botPlatformContext,
         clientIp,
         disabledPluginIds,
         discordContext,
-        discovery,
         enableExpertise,
         evalContext,
         evalRuntime,
         hooks,
-        initialContext,
+        init,
         initialLlmCalls,
         initialStepCount,
         maxSteps,
         operationId,
         operationTaskId,
         parentOperationId,
-        prep,
         providedApprovalResolutionRequestId,
         queueRetries,
         queueRetryDelay,
+        reservedOperation: !!params.reservedOperationId,
         signal,
         stream,
         clientProtocol: params.clientProtocol,
@@ -745,4 +832,5 @@ export const execAgentTurn = async (
       },
     ),
   );
+  return started;
 };

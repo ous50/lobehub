@@ -1,5 +1,7 @@
 import { CredsIdentifier } from '@lobechat/builtin-tool-creds';
-import { GoalIdentifier, isGoalPrompt } from '@lobechat/builtin-tool-goal';
+import { DashboardIdentifier, isDashboardIdentifier } from '@lobechat/builtin-tool-dashboard';
+import { GoalIdentifier, isGoalIdentifier, isGoalPrompt } from '@lobechat/builtin-tool-goal';
+import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
 import type { DeviceAttachment } from '@lobechat/builtin-tool-remote-device';
 import { generateSystemPrompt, RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
 import {
@@ -32,11 +34,16 @@ import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { getServerFeatureFlagsStateFromRuntimeConfig } from '@/server/featureFlags';
 import type { ServerAgentToolsContext } from '@/server/modules/Mecha';
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
+import {
+  AgentEvalConnectorService,
+  getEvalConnectorDatasetId,
+} from '@/server/services/agentEvalConnector';
 import { isAgentSignalEnabledForUser } from '@/server/services/agentSignal/featureGate';
 import { resolveUnsupportedMessageApis } from '@/server/services/bot/platforms/messageCapabilities';
 import { deviceGateway } from '@/server/services/deviceGateway';
 
 import { buildAllowedBuiltinTools } from '../../deviceToolRegistry';
+import { applyFrozenEvalManifests } from '../../evalGate/frozenManifests';
 import {
   filterPluginsByShareGate,
   getShareGrantActivatedPluginIds,
@@ -100,6 +107,7 @@ export const discoverTools = async (
     disableTools,
     disabledPluginIds: requestedDisabledPluginIds,
     discordContext,
+    evalConnectorSnapshots,
     exclusivePluginIds,
     externalFileTypes: rawExternalFileTypes,
     functionTools,
@@ -112,7 +120,7 @@ export const discoverTools = async (
     throwIfExecutionAborted,
     topicBoundDeviceId,
   } = input;
-  // Feature-flagged builtin tools (e.g. lobe-dashboard) leave the pool while
+  // Feature-flagged builtin tools (e.g. builtin-dashboard) leave the pool while
   // their flag is off for this user; a flag read failure keeps them out.
   const featureFlags = await getServerFeatureFlagsStateFromRuntimeConfig(deps.userId).catch(
     () => undefined,
@@ -141,6 +149,18 @@ export const discoverTools = async (
   let hasEnabledKnowledgeBases = false;
   let operationAgentGroup: AgentGroupConfig | undefined;
   const isBotConversation = !!(botContext || discordContext);
+  const boundConnectorIds = new Set(Object.keys(evalConnectorSnapshots ?? {}));
+  const boundConnectorManifests =
+    evalConnectorSnapshots && boundConnectorIds.size
+      ? (
+          await new AgentEvalConnectorService(
+            deps.db,
+            deps.userId,
+            getEvalConnectorDatasetId(evalConnectorSnapshots),
+            deps.workspaceId,
+          ).resolveBindings(evalConnectorSnapshots, evalConnectorSnapshots)
+        ).manifests
+      : [];
 
   // Device-tool access (`canUseDevice` / `deviceAccessReason`) was resolved
   // once before the hetero early exit; the decision flows into the
@@ -163,7 +183,15 @@ export const discoverTools = async (
       ? [GoalIdentifier]
       : [
           ...new Set([
-            ...getActivePluginIds(agentConfig?.plugins),
+            // An agent that pinned the goal or dashboard tool before its
+            // rename still carries the legacy id; resolve it to the current one.
+            ...getActivePluginIds(agentConfig?.plugins).map((id) =>
+              isGoalIdentifier(id)
+                ? GoalIdentifier
+                : isDashboardIdentifier(id)
+                  ? DashboardIdentifier
+                  : id,
+            ),
             ...(additionalPluginIds || []),
             ...(selectedToolIds || []),
             ...(hasMentionedAgents ? ['lobe-agent-management'] : []),
@@ -207,8 +235,11 @@ export const discoverTools = async (
     : startToolReads(deps, {
         agentConfig,
         attachedFileIds,
-        candidateIds: [...agentPlugins],
-        exclusivePluginIds,
+        candidateIds: agentPlugins.filter((identifier) => !boundConnectorIds.has(identifier)),
+        // Bound eval tools must not auto-discover unrelated credential-bearing
+        // connectors. This limits reads only; progressive activation remains enabled.
+        exclusivePluginIds:
+          exclusivePluginIds ?? (evalConnectorSnapshots ? agentPlugins : undefined),
         isGoalTurn,
         projectId: appContext?.projectId,
         requestedDeviceId,
@@ -240,6 +271,7 @@ export const discoverTools = async (
     const disabledPluginIdSet = new Set(disabledPluginIds);
     const installedPlugins = (await toolReads.installedPlugins).filter(
       (p) =>
+        !boundConnectorIds.has(p.identifier) &&
         !disabledPluginIdSet.has(p.identifier) &&
         (!shareGrantedExtensionIds || shareGrantedExtensionIds.has(p.identifier)),
     );
@@ -264,7 +296,10 @@ export const discoverTools = async (
     // borrowed tool runs on (see `buildOwnershipNote`).
     connectorOwnershipNote = await buildOwnershipNote(deps, connectors);
 
-    connectorManifests = buildConnectorManifests(connectorsMcp, connectorTools);
+    connectorManifests = [
+      ...buildConnectorManifests(connectorsMcp, connectorTools),
+      ...boundConnectorManifests,
+    ];
 
     scheduleConnectorRefresh(deps, {
       connectorGateKeeper,
@@ -332,6 +367,7 @@ export const discoverTools = async (
 
     hasAgentDocuments = await toolReads.agentDocuments;
     const hasOversizedFiles = await toolReads.oversizedFiles;
+    const hasIdentityAccount = await toolReads.hasIdentityAccount;
 
     log('execAgent: isBotConversation=%s', isBotConversation);
 
@@ -483,6 +519,7 @@ export const discoverTools = async (
       executionPlan,
       globalMemoryEnabled,
       hasEnabledKnowledgeBases,
+      hasIdentityAccount,
       hasOversizedFiles,
       isBotConversation,
       isGroupSupervisor,
@@ -524,7 +561,10 @@ export const discoverTools = async (
     // read off here and await it at the end: it is one Market round trip, and
     // every step of the run reads the answer back off the operation instead of
     // asking again.
-    if (toolsResult.enabledToolIds?.includes(CredsIdentifier)) {
+    if (
+      toolsResult.enabledToolIds?.includes(CredsIdentifier) &&
+      !boundConnectorIds.has(CredsIdentifier)
+    ) {
       credentialFactsPromise = readCredentialFacts(deps);
     }
 
@@ -565,6 +605,7 @@ export const discoverTools = async (
       ],
       lobehubSkills: activeLobehubSkillManifests,
       manifestContext,
+      pageScope: manifestContext?.scope === 'page' && pluginIds.includes(PageAgentIdentifier),
     });
     Object.assign(toolManifestMap, discovery.manifestMap);
     Object.assign(toolSourceMap, discovery.sourceMap);
@@ -674,6 +715,26 @@ export const discoverTools = async (
       ...toolManifestMap[RemoteDeviceManifest.identifier],
       systemRole: generateSystemPrompt(onlineDevices),
     };
+  }
+
+  if (!disableTools && boundConnectorManifests.length > 0) {
+    const frozenToolSet = {
+      activatableToolIds: [],
+      enabledToolIds: toolsResult.enabledToolIds,
+      executorMap: toolExecutorMap,
+      manifestMap: toolManifestMap,
+      sourceMap: toolSourceMap,
+      tools,
+    };
+    applyFrozenEvalManifests(
+      frozenToolSet,
+      boundConnectorManifests.filter(
+        (manifest) =>
+          (!exclusivePluginIds || exclusivePluginIds.includes(manifest.identifier)) &&
+          !requestedDisabledPluginIds.includes(manifest.identifier),
+      ),
+    );
+    tools = frozenToolSet.tools;
   }
 
   return {

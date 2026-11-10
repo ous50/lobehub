@@ -1,7 +1,7 @@
-import type { ReplicaSlice } from '@lobechat/replica/zustand';
 import type { WorkspaceUserPreference } from '@lobechat/types';
 import { mergeNotificationSettings } from '@lobechat/utils/mergeNotificationSettings';
 import isEqual from 'fast-deep-equal';
+import type { ReplicaSlice } from 'local-replica/zustand';
 import { useSyncExternalStore } from 'react';
 
 import {
@@ -192,25 +192,6 @@ export class WorkspaceUserSettingsActionImpl {
       isLoading: !!workspaceId && data === undefined && (!sync.isHydrated || sync.isValidating),
       mutate: sync.revalidate,
     };
-  };
-
-  /**
-   * Seed the active workspace's persisted preference before a route commits, so
-   * pre-paint reads that depend on it (the topic sidebar's "only mine" filter)
-   * ask for the same list the mounted sidebar will. Call from a route loader,
-   * bounded by a timeout. Resolves whether the active workspace's preference
-   * is known afterwards — always in personal mode, which has no row.
-   */
-  preHydrateWorkspaceUserPreference = async (): Promise<boolean> => {
-    const workspaceId = getActiveWorkspaceId();
-    if (!workspaceId) return true;
-
-    const replica = this.#replica();
-    const scope = getWorkspaceUserPreferenceResource().scope.get();
-    // The slot may still hold the previous identity's bucket; drop it first.
-    replica.ensureScope(scope);
-    await replica.hydrate({ workspaceId }, scope);
-    return this.#get().workspaceUserPreferenceWorkspaceId === workspaceId;
   };
 
   updateWorkspaceUserPreference = async (

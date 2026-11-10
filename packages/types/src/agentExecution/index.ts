@@ -4,6 +4,8 @@ import type { LobeAgentChatConfig } from '../agent/chatConfig';
 import type { CreateThreadWithMessageParams } from '../aiChat';
 import type { DeviceUnavailableErrorData } from '../device';
 import { workingDirConfigSchema } from '../device';
+import type { EvalToolForwardingConfig } from '../eval/agentEval';
+import type { EvalMemoryReference } from '../eval/evalMemory';
 import type { ComposerUserMessage, TaskDetail, UIChatMessage } from '../message';
 import type { ChatTopic } from '../topic';
 
@@ -642,6 +644,12 @@ export interface ExecVirtualSubAgentParams {
   /** The agent ID to execute */
   agentId: string;
   /**
+   * Detached run (`callSubAgent({ runInBackground })`): the parent is not
+   * parked on it, its placeholder already holds the start receipt, and the
+   * answer is delivered to the parent as a separate message on completion.
+   */
+  background?: boolean;
+  /**
    * chatConfig overrides (thinking / reasoning-effort extend params) for the
    * sub-agent run, from the parent agent's `agencyConfig.subagent.chatConfig`.
    * Merged over the executing agent's own chatConfig, skipping nulled keys.
@@ -653,6 +661,25 @@ export interface ExecVirtualSubAgentParams {
    * runs instead of re-routing through the agent-level `boundDeviceId`.
    */
   deviceId?: string;
+  /**
+   * What the child inherits when the parent runs inside an eval attempt: the
+   * attempt's prompt context (session clock), its runtime (tool forwarding,
+   * Memory scope) and its step cap. Without these the child leaves the sandbox:
+   * it reaches real services, the caller's own Memory and the wall clock, and
+   * runs with no step limit.
+   */
+  eval?: {
+    context?: { envPrompt?: string; sessionDate?: string; timezone?: string };
+    maxSteps?: number;
+    runtime?: {
+      /** The parent's tool allowlist; the child may not reach past it either. */
+      allowedTools?: string[];
+      attemptId?: string;
+      caseId?: string;
+      memory?: EvalMemoryReference;
+      toolForwarding?: EvalToolForwardingConfig;
+    };
+  };
   /** The Group ID inherited from the parent operation, when present */
   groupId?: string;
   /** Instruction/prompt for the virtual sub-agent */
@@ -676,6 +703,12 @@ export interface ExecVirtualSubAgentParams {
   parentOperationId: string;
   /** Provider for {@link model}. */
   provider?: string;
+  /**
+   * The tool call (`callSubAgent` / `callAgent`) that spawned this sub-agent,
+   * stored on a new thread's metadata so the UI shows the thread as a
+   * sub-agent. A continued thread keeps the call that first spawned it.
+   */
+  sourceToolCallId?: string;
   /**
    * Existing isolation thread of an earlier `callSubAgent` run to continue.
    * When set, the instruction becomes a new turn on that thread (the sub-agent
@@ -704,6 +737,8 @@ export interface ExecSubAgentResult {
   success: boolean;
   /** The Thread ID where the execution is isolated */
   threadId: string;
+  /** Short-lived Gateway ticket for streaming this run (absent when withheld) */
+  token?: string;
 }
 
 /**

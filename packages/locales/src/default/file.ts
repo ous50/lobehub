@@ -2,6 +2,25 @@ export default {
   'addFolder': 'Create Folder',
   'addLibrary': 'Add',
   'addPage': 'Create Page',
+  'canvasStorage.delete.content':
+    'This deletes every version and file of “{{title}}” and frees {{size}}. This can’t be undone.',
+  'canvasStorage.delete.contentNoSize':
+    'This deletes every version and file of “{{title}}”. This can’t be undone.',
+  'canvasStorage.delete.published': 'Its public link will stop working.',
+  'canvasStorage.delete.success': 'Canvas deleted. {{size}} freed.',
+  'canvasStorage.delete.successNoSize': 'Canvas deleted',
+  'canvasStorage.delete.title': 'Delete this canvas?',
+  'canvasStorage.menu.copyLink': 'Copy public link',
+  'canvasStorage.menu.delete': 'Delete canvas',
+  'canvasStorage.orphan.clean': 'Clean up',
+  'canvasStorage.orphan.confirm':
+    'This deletes {{size}} of files left by canvases that no longer exist. This can’t be undone.',
+  'canvasStorage.orphan.desc':
+    '{{size}} of files left by deleted canvases still count toward storage',
+  'canvasStorage.orphan.success': 'Leftover files cleaned up. {{size}} freed.',
+  'canvasStorage.orphan.title': 'Clean up leftover canvas files?',
+  'canvasStorage.summary_one': 'Your {{count}} canvas uses {{size}} of file storage',
+  'canvasStorage.summary_other': 'Your {{count}} canvases use {{size}} of file storage',
   'detail.basic.createdAt': 'Creation Time',
   'detail.basic.filename': 'File Name',
   'detail.basic.size': 'File Size',
@@ -41,6 +60,11 @@ export default {
   'docs.home.tabs.mine': 'Created by me',
   'docs.home.tabs.recent': 'Recently updated',
   'docs.home.tabs.shared': 'Shared with me',
+  'docs.library.agentSpaces.emptyDesc': "An Agent's documents appear here once you open that Agent",
+  'docs.library.agentSpaces.emptyTitle': 'No Agent knowledge bases yet',
+  'docs.library.agentSpaces.untitled': 'Untitled Agent',
+  'docs.library.tabs.agents': 'Agents',
+  'docs.library.tabs.mine': 'My knowledge bases',
   'docs.library.emptyDesc':
     'Gather related files and pages into a knowledge base to share them with your team and Agents',
   'docs.library.emptyTitle': 'No knowledge bases yet',
@@ -68,6 +92,7 @@ export default {
   'docs.section.drive': 'Drive',
   'docs.section.home': 'Home',
   'docs.section.library': 'Knowledge Bases',
+  'docs.section.sandboxStorage': 'Sandbox Storage',
   'docs.section.works': 'Works',
   'docs.sectionView.emptyFiltered': 'No pages match this filter',
   'docs.sectionView.filter': 'Show',
@@ -89,6 +114,7 @@ export default {
   'docs.shared.title': 'Shared docs',
   'docs.viewAllPages': 'View all',
   'docs.works.all': 'All',
+  'docs.works.canvas': 'Canvas',
   'docs.works.document': 'Documents',
   'docs.works.task': 'Tasks',
   'empty': 'No files or folders have been uploaded yet.',
@@ -288,9 +314,56 @@ export default {
   'imageViewer.zoomIn': 'Zoom in',
   'imageViewer.zoomOut': 'Zoom out',
   'pageEditor.addIcon': 'Add Icon',
+  'pageEditor.agentEditing': 'Agent is editing the page…',
+  'pageEditor.agentUnavailable.connectMarket': 'Connect Market',
+  'pageEditor.agentUnavailable.marketUnauthorized':
+    'The Agent edits pages in the cloud sandbox. Connect your Market account to let it edit this page.',
+  'pageEditor.agentUnavailable.noGateway':
+    "The Agent can't edit pages until Gateway Mode is on. Ask your admin to turn it on.",
+  'pageEditor.agentUnavailable.sandboxUnconfigured':
+    "The Agent can't edit pages until a sandbox is configured. Ask your admin to set one up.",
+  'pageEditor.agentUnavailable.viewDocs': 'View docs',
   'pageEditor.artifactTag': 'Artifact',
   'pageEditor.autoSaveMessage': 'Your page is saved automatically. No need to save manually.',
+  'pageEditor.charLimit.blockedDescription':
+    'Changes are not saved. Shorten the page or upgrade your plan to keep editing.',
+  'pageEditor.charLimit.blockedTitle':
+    'This page has {{actual}} characters, over the {{limit}}-character limit per page on your plan.',
+  'pageEditor.charLimit.nearDescription':
+    'Saving will be refused once the page goes over the limit.',
+  'pageEditor.charLimit.nearTitle':
+    'This page has {{actual}} of {{limit}} characters allowed per page on your plan.',
+  'pageEditor.charLimit.overDescription':
+    'Changes cannot be saved while the page is over the limit. Shorten the page or upgrade your plan.',
   'pageEditor.chooseIcon': 'Choose Icon',
+  'pageEditor.collab.deleted.description':
+    'It was deleted or moved out of this workspace. Return to the page list to keep working.',
+  'pageEditor.collab.deleted.title': 'This page is no longer available here',
+  'pageEditor.collab.nearFull.description':
+    "It's close to its size limit. Remove content you no longer need, or move some of it to a new page.",
+  'pageEditor.collab.nearFull.title': 'This page is almost full',
+  'pageEditor.collab.notSynced':
+    'Your latest page edits are still syncing, so the Agent may not see them yet.',
+  'pageEditor.collab.offlineRestore.content':
+    'The page was reloaded from the server while you were offline, and your unsynced edits are not in it. Put your version back?',
+  'pageEditor.collab.offlineRestore.discard': 'Keep the current page',
+  'pageEditor.collab.offlineRestore.restore': 'Restore my version',
+  'pageEditor.collab.offlineRestore.title': 'Restore your offline edits?',
+  'pageEditor.collab.presence.agent': 'Agent',
+  'pageEditor.collab.presence.agentStatus': 'Editing this page',
+  'pageEditor.collab.presence.away': 'Away',
+  'pageEditor.collab.presence.inSection': 'In “{{section}}”',
+  'pageEditor.collab.presence.jumpHint': 'Click to jump',
+  'pageEditor.collab.presence.onPage': 'On this page',
+  'pageEditor.collab.presence.title': 'Also on this page',
+  'pageEditor.collab.presence.trigger': 'People on this page',
+  'pageEditor.collab.retry': 'Retry',
+  'pageEditor.collab.status.connecting': 'Connecting…',
+  'pageEditor.collab.status.error': "Couldn't sync this page.",
+  'pageEditor.collab.status.offline': 'Offline. Edits sync when you reconnect.',
+  'pageEditor.collab.tooLarge.description':
+    'It reached its size limit. Contact support to trim it or restore an earlier version.',
+  'pageEditor.collab.tooLarge.title': 'This page is too large to edit',
   'pageEditor.comments.anchor.add': 'Comment',
   'pageEditor.comments.anchor.addToLine': 'Comment on this line',
   'pageEditor.comments.anchor.label': 'Quoted text:',

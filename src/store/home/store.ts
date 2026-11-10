@@ -13,6 +13,8 @@ import { type HomeStoreState } from './initialState';
 import { initialState } from './initialState';
 import { type AgentListAction } from './slices/agentList/action';
 import { createAgentListSlice } from './slices/agentList/action';
+import { type FavoriteAction } from './slices/favorite/action';
+import { createFavoriteSlice } from './slices/favorite/action';
 import { type GroupAction } from './slices/group/action';
 import { createGroupSlice } from './slices/group/action';
 import { type HomeInputAction } from './slices/homeInput/action';
@@ -21,6 +23,8 @@ import { type HomeInboxAction } from './slices/inbox/action';
 import { createHomeInboxSlice } from './slices/inbox/action';
 import { type LabelAction } from './slices/label/action';
 import { createLabelSlice } from './slices/label/action';
+import { type HomeNotificationAction } from './slices/notification/action';
+import { createHomeNotificationSlice } from './slices/notification/action';
 import { type RecentAction } from './slices/recent/action';
 import { createRecentSlice } from './slices/recent/action';
 import { type SidebarUIAction } from './slices/sidebarUI/action';
@@ -31,20 +35,24 @@ import { createSidebarUISlice } from './slices/sidebarUI/action';
 export interface HomeStore
   extends
     AgentListAction,
+    FavoriteAction,
     GroupAction,
     RecentAction,
     HomeInboxAction,
     HomeInputAction,
+    HomeNotificationAction,
     LabelAction,
     SidebarUIAction,
     ResetableStore,
     HomeStoreState {}
 
 type HomeStoreAction = AgentListAction &
+  FavoriteAction &
   GroupAction &
   RecentAction &
   HomeInboxAction &
   HomeInputAction &
+  HomeNotificationAction &
   LabelAction &
   SidebarUIAction &
   ResetableStore;
@@ -59,10 +67,12 @@ const createStore: StateCreator<HomeStore, [['zustand/devtools', never]]> = (
   ...initialState,
   ...flattenActions<HomeStoreAction>([
     createAgentListSlice(...parameters),
+    createFavoriteSlice(...parameters),
     createGroupSlice(...parameters),
     createRecentSlice(...parameters),
     createHomeInboxSlice(...parameters),
     createHomeInputSlice(...parameters),
+    createHomeNotificationSlice(...parameters),
     createLabelSlice(...parameters),
     createSidebarUISlice(...parameters),
     new HomeStoreResetAction(...parameters),

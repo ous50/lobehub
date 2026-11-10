@@ -1,10 +1,20 @@
 'use client';
 
-import { AGENT_CHAT_URL, DEFAULT_AVATAR, GROUP_CHAT_URL } from '@lobechat/const';
+import { AGENT_CHAT_URL, DEFAULT_USER_AVATAR_URL, GROUP_CHAT_URL } from '@lobechat/const';
 import type { SidebarAgentItem } from '@lobechat/types';
 import { agentDisplayName, agentSecondaryDisplayName } from '@lobechat/types';
-import { ContextMenuTrigger, type DropdownItem, Flexbox, Tooltip } from '@lobehub/ui';
-import { ActionIcon, Avatar, createStaticStyles, cssVar, cx, Text } from '@lobehub/ui';
+import {
+  ActionIcon,
+  Avatar,
+  ContextMenuTrigger,
+  createStaticStyles,
+  cssVar,
+  cx,
+  type DropdownItem,
+  Flexbox,
+  Text,
+  Tooltip,
+} from '@lobehub/ui';
 import dayjs from 'dayjs';
 import { EyeIcon, EyeOffIcon } from 'lucide-react';
 import { memo, type MouseEvent, useCallback, useRef, useState } from 'react';
@@ -12,9 +22,9 @@ import { useTranslation } from 'react-i18next';
 
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
 
-import AgentAvatar from './AgentAvatar';
 import ItemActions from './ItemActions';
 import LabelTags from './LabelTags';
+import SidebarItemAvatar from './SidebarItemAvatar';
 
 /** Fixed action-column width (sidebar-eye toggle + "…" menu) so rows stay aligned. */
 export const ACTION_COL_WIDTH = 64;
@@ -180,7 +190,7 @@ const AgentRow = memo<AgentRowProps>(
             className={styles.identity}
             to={type === 'group' ? GROUP_CHAT_URL(id) : AGENT_CHAT_URL(id, false)}
           >
-            <AgentAvatar item={item} size={28} />
+            <SidebarItemAvatar item={item} size={28} />
             {/* Three single-line columns: who the agent is, the role it plays,
               and what it is responsible for. */}
             <Text ellipsis className={cx('agent-row-title', styles.name)} weight={500}>
@@ -210,7 +220,10 @@ const AgentRow = memo<AgentRowProps>(
               <Flexbox flex={'none'} style={{ width: AUTHOR_COL_WIDTH }}>
                 {author && (
                   <Tooltip title={author.name}>
-                    <Avatar avatar={author.avatar || DEFAULT_AVATAR} size={AUTHOR_COL_WIDTH} />
+                    <Avatar
+                      avatar={author.avatar || DEFAULT_USER_AVATAR_URL}
+                      size={AUTHOR_COL_WIDTH}
+                    />
                   </Tooltip>
                 )}
               </Flexbox>

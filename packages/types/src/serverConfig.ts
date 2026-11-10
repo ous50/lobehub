@@ -25,23 +25,40 @@ export type IFeatureFlagsState = {
    */
   enableAgentShare: boolean | undefined;
   enableAuthCaptcha: boolean | undefined;
+  /**
+   * Multi-agent Channels (`channel`). Off by default: the sidebar section and Channel pages are
+   * hidden and the Channel APIs answer FORBIDDEN.
+   */
+  enableChannels: boolean | undefined;
   enableCheckUpdates: boolean | undefined;
   /**
-   * Dashboards and the `lobe-dashboard` agent tool (`dashboard`). Off by
+   * Dashboards and the `builtin-dashboard` agent tool (`dashboard`). Off by
    * default: the pages, Portal view, in-chat previews and the tool are hidden
    * and the widget / dashboard APIs answer FORBIDDEN.
    */
   enableDashboard: boolean | undefined;
   enableDevDock: boolean | undefined;
   /**
-   * Rollout gate for the multiplexed gateway socket. Necessary but not
-   * sufficient: the transport also requires
-   * `GlobalServerConfig.agentGatewayProtocol === 2`.
+   * Rail layout trial (`im_layout`): icon rail, IM-style Messages list,
+   * Contacts, Tasks scope list and the agent profile side panel. Off keeps the
+   * current sidebar layout.
    */
-  enableGatewayMux: boolean | undefined;
+  enableImLayout: boolean | undefined;
+  /**
+   * @deprecated The new subscription tiers are always on. Kept as a constant
+   * `true` because released desktop clients still read it and fall back to the
+   * retired plans when it is missing. Remove once those clients are no longer
+   * supported.
+   */
+  enableNewTierPlans: true;
+  /**
+   * Rollout gate for buying the new tiers in the mobile app
+   * (`mobile_new_tier_sales`).
+   */
+  enableMobileNewTierSales: boolean | undefined;
   /**
    * LobeHub Mobile rollout gate for the multiplexed gateway socket and
-   * protocol-v2 payloads; independent from `enableGatewayMux`.
+   * protocol-v2 payloads. Web follows `GlobalServerConfig.agentGatewayProtocol`.
    */
   enableGatewayMuxMobile: boolean | undefined;
   enableKnowledgeBase: boolean | undefined;
@@ -51,10 +68,36 @@ export type IFeatureFlagsState = {
    * as an executor only when this is on; the server checks it again.
    */
   enableLlmRelay: boolean | undefined;
+  /** A plain chat send leaves its init to the step-0 worker (`agent_deferred_init`). */
+  enableDeferredInit: boolean | undefined;
+  /**
+   * Creating managed cloud devices (`managed_cloud_device`). Off by default: the "Create in
+   * cloud" entry is hidden and the creation APIs answer FORBIDDEN. Existing managed devices keep
+   * working.
+   */
+  enableManagedCloudDevice: boolean | undefined;
+  /**
+   * MCP Apps views in the conversation (`mcp_apps`). Off by default: tool results
+   * that declare a `ui://` view render as plain results.
+   */
+  enableMcpApps: boolean | undefined;
+  /**
+   * Agent documents move into a dedicated knowledge base at runtime
+   * (`agent_knowledge_space`). Off by default.
+   */
+  enableAgentKnowledgeSpace: boolean | undefined;
   enableOnboardingV2: boolean | undefined;
   enableRAGEval: boolean | undefined;
   enableSTT: boolean | undefined;
   enableStorageOverage: boolean | undefined;
+  /**
+   * Keep the immutable `operationToolSet` out of the per-step agent state blob
+   * and in its own Redis key (`agent_runtime_strip_operation_toolset`). Server
+   * only; `AGENT_RUNTIME_STRIP_OPERATION_TOOLSET` (`0` / `1`) overrides it.
+   */
+  enableStripOperationToolset: boolean | undefined;
+  /** Hover previews of a topic's final answer (`topic_preview`). */
+  enableTopicPreview: boolean | undefined;
   enableVoiceDictation: boolean | undefined;
   enableWorkspace: boolean | undefined;
   hideDocs: boolean | undefined;
@@ -130,6 +173,12 @@ export interface GlobalServerConfig {
    * events via the Gateway instead of running the agent loop client-side.
    */
   agentGatewayUrl?: string;
+  /**
+   * Agent identity providers this deployment has credentials for
+   * (`agent-mail`). Empty means an agent cannot be given an address
+   * here, so the identity settings have nothing to offer.
+   */
+  agentIdentityProviders?: string[];
   aiProvider: ServerLanguageModel;
   defaultAgent?: PartialDeep<UserDefaultAgent>;
   /** Whether the server has DEVICE_GATEWAY_URL configured, independent of its public URL. */
@@ -155,7 +204,11 @@ export interface GlobalServerConfig {
   enableMagicLink?: boolean;
   enableMarketTrustedClient?: boolean;
   enableMultimodalUnderstanding?: boolean;
+  /** Pages collaborate live through the gateway's document rooms (LobeHub Cloud). */
+  enablePageCollab?: boolean;
   enableUploadFileToServer?: boolean;
+  /** Workspace pages collaborate live through the gateway's durable rooms (LobeHub Cloud). */
+  enableWorkspacePageCollab?: boolean;
   image?: PartialDeep<UserImageConfig>;
   /**
    * Whether the server can relay an LLM call to a browser tab (Agent Gateway
@@ -172,6 +225,11 @@ export interface GlobalServerConfig {
    * reverse proxy or on desktop.
    */
   oidcIssuer?: string;
+  /**
+   * The sandbox the page agent edits pages in: Market (needs the user's Market
+   * authorization unless the trusted client is configured), Onlyboxes, or none.
+   */
+  sandbox?: 'market' | 'onlyboxes' | 'unconfigured';
   systemAgent?: PartialDeep<UserServiceModelConfig>;
   telemetry: {
     langfuse?: boolean;

@@ -1,3 +1,5 @@
+import { isWorkspaceReadableVisibility } from '@lobechat/const/verify';
+
 import { WorkspaceMemberModel } from '@/database/models/workspaceMember';
 import type { AcceptanceItem } from '@/database/schemas/verify';
 import type { LobeChatDatabase } from '@/database/type';
@@ -26,14 +28,22 @@ export interface AcceptanceScopeCtx {
  * all. Reading membership off the row's own workspace is what makes the rule
  * stable no matter where the caller happens to be standing, and it is the same
  * rule `getBundle` reports as `canReview`, so the page can never advertise an
- * action the mutation would refuse.
+ * action the mutation would refuse. An `owner` acceptance is managed by its
+ * creator alone.
  */
+type ScopedAcceptance = Pick<AcceptanceItem, 'userId' | 'visibility' | 'workspaceId'> & {
+  subjectType?: AcceptanceItem['subjectType'];
+};
+
 export async function canManageAcceptance(
   ctx: AcceptanceScopeCtx,
-  acceptance: Pick<AcceptanceItem, 'userId' | 'workspaceId'>,
+  acceptance: ScopedAcceptance,
 ): Promise<boolean> {
+  // A site's standing review is managed only through its site in project settings.
+  if (acceptance.subjectType === 'site') return false;
   if (ctx.userId && ctx.userId === acceptance.userId) return true;
   if (!ctx.userId || !acceptance.workspaceId) return false;
+  if (!isWorkspaceReadableVisibility(acceptance.visibility)) return false;
 
   const member = await new WorkspaceMemberModel(ctx.serverDB, ctx.userId).getMember(
     acceptance.workspaceId,
@@ -48,16 +58,22 @@ export async function canManageAcceptance(
  * ONE read — a 200-row sweep, or a participated page spanning many workspaces,
  * must not turn authorization into a chain of sequential queries.
  */
-export async function filterManageableAcceptances<
-  T extends Pick<AcceptanceItem, 'userId' | 'workspaceId'>,
->(ctx: AcceptanceScopeCtx, rows: T[]): Promise<T[]> {
+export async function filterManageableAcceptances<T extends ScopedAcceptance>(
+  ctx: AcceptanceScopeCtx,
+  rows: T[],
+): Promise<T[]> {
   if (!ctx.userId) return [];
   const userId = ctx.userId;
 
   const foreignWorkspaceIds = [
     ...new Set(
       rows
-        .filter((row) => row.userId !== userId && row.workspaceId)
+        .filter(
+          (row) =>
+            row.userId !== userId &&
+            row.workspaceId &&
+            isWorkspaceReadableVisibility(row.visibility),
+        )
         .map((row) => row.workspaceId as string),
     ),
   ];
@@ -68,7 +84,10 @@ export async function filterManageableAcceptances<
 
   return rows.filter(
     (row) =>
-      row.userId === userId ||
-      (row.workspaceId ? isDeciderRole(roles.get(row.workspaceId)) : false),
+      row.subjectType !== 'site' &&
+      (row.userId === userId ||
+        (row.workspaceId && isWorkspaceReadableVisibility(row.visibility)
+          ? isDeciderRole(roles.get(row.workspaceId))
+          : false)),
   );
 }

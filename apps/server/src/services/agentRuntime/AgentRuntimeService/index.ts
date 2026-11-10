@@ -114,7 +114,7 @@ if (process.env.VERCEL) {
   debug.log = console.info.bind(console);
 }
 
-export { createEvalToolForwardingHook } from './evalToolForwardingHook';
+export { createEvalToolGateHook, EVAL_TOOL_BLOCKED_ERROR } from './evalToolGateHook';
 export type { AgentRuntimeDelegate, AgentRuntimeServiceOptions } from './types';
 
 /**
@@ -195,6 +195,11 @@ export class AgentRuntimeService {
     });
     this.completionLifecycle = new CompletionLifecycle(db, userId, workspaceId, {
       includeShareVisitor,
+      onTopicRunSettled: ({ operationId, topicId }) =>
+        this.delegate.deliverBackgroundSubAgentResults?.({
+          settledOperationId: operationId,
+          topicId,
+        }) ?? Promise.resolve(),
     });
     this.humanIntervention = new HumanInterventionHandler(db, this.messageModel);
 

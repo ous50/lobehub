@@ -235,6 +235,11 @@ export class GatewayStreamNotifier implements IStreamEventManager {
     return result;
   }
 
+  /** Storage-only: clients already received the removed entries live. */
+  async deleteStreamEvents(operationId: string, eventIds: string[]): Promise<void> {
+    return this.inner.deleteStreamEvents(operationId, eventIds);
+  }
+
   async publishStreamChunk(
     operationId: string,
     stepIndex: number,
@@ -379,6 +384,7 @@ export class GatewayStreamNotifier implements IStreamEventManager {
       // user-side / board-worthy decision lives here, next to the error spec.
       ...(reason === 'error' && {
         recordError: shouldRecordGatewayError({
+          error: finalState?.error,
           errorType: rawErrorType,
           provider: finalState?.modelRuntimeConfig?.provider,
         }),

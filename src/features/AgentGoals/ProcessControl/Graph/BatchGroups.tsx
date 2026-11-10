@@ -51,13 +51,14 @@ import {
   type BatchUnitOrigin,
   countCells,
   reopenedRows,
+  unitsPhase,
 } from './batchModel';
 
 /**
  * The expanded batch, drawn the way it is followed and with no frame of its
  * own: the first round's trials (an experiment probe) as task cards, the roster as waves of squares, and a
  * small re-dispatch group per re-opened round. Squares carry the canonical
- * execution states — grey not run, amber running (breathing square), blue needs a
+ * execution states — grey not run, amber running (glowing square), blue needs a
  * person, green done, faded superseded.
  */
 
@@ -77,19 +78,19 @@ export const CELL_VISUAL: Record<BatchCellState, { color: string; icon: LucideIc
 };
 
 const styles = createStaticStyles(({ css }) => ({
-  breathe: css`
-    animation: goal-batch-breathe 1.6s ease-in-out infinite;
+  glow: css`
+    animation: goal-batch-glow 1.6s ease-in-out infinite;
 
-    @keyframes goal-batch-breathe {
+    @keyframes goal-batch-glow {
       0%,
       100% {
-        transform: scale(1);
-        opacity: 1;
+        box-shadow: 0 0 0 0 color-mix(in srgb, ${cssVar.colorWarning} 0%, transparent);
       }
 
       50% {
-        transform: scale(0.86);
-        opacity: 0.42;
+        box-shadow:
+          0 0 0 2px color-mix(in srgb, ${cssVar.colorWarning} 28%, transparent),
+          0 0 8px 2px color-mix(in srgb, ${cssVar.colorWarning} 55%, transparent);
       }
     }
 
@@ -477,7 +478,7 @@ export const Square = memo<{
         'nodrag',
         styles.square,
         nodeId && onSelect && styles.squareLink,
-        state === 'running' && styles.breathe,
+        state === 'running' && styles.glow,
       )}
       onClick={(event) => {
         event.stopPropagation();
@@ -501,20 +502,33 @@ const useUnitsStatus = () => {
     cells: { state: BatchCellState }[],
     copy: { done: string; pending: string; running: string },
     started: boolean,
+    held?: boolean,
   ): GroupStatus => {
     const counts = countCells(cells);
-    if (counts.human)
-      return { ...CELL_VISUAL.human, text: t('goalBatch.status.human', { count: counts.human }) };
-    if (counts.stale && counts.stale + counts.done < cells.length)
-      return {
-        color: cssVar.colorWarning,
-        icon: CircleSlash,
-        text: t('goalBatch.status.stale', { count: counts.stale }),
-      };
-    if (cells.length > 0 && counts.done + counts.stale === cells.length)
-      return { ...CELL_VISUAL.done, text: copy.done };
-    if (!started && !counts.running) return { ...CELL_VISUAL.backlog, text: copy.pending };
-    return { ...CELL_VISUAL.running, running: true, text: copy.running };
+    switch (unitsPhase(cells, started, held)) {
+      case 'human': {
+        return { ...CELL_VISUAL.human, text: t('goalBatch.status.human', { count: counts.human }) };
+      }
+      case 'stale': {
+        return {
+          color: cssVar.colorWarning,
+          icon: CircleSlash,
+          text: t('goalBatch.status.stale', { count: counts.stale }),
+        };
+      }
+      case 'done': {
+        return { ...CELL_VISUAL.done, text: copy.done };
+      }
+      case 'held': {
+        return { ...CELL_VISUAL.human, text: t('goalBatch.status.held') };
+      }
+      case 'pending': {
+        return { ...CELL_VISUAL.backlog, text: copy.pending };
+      }
+      default: {
+        return { ...CELL_VISUAL.running, running: true, text: copy.running };
+      }
+    }
   };
 };
 
@@ -819,6 +833,8 @@ const useOriginCopy = () => {
 };
 
 export interface BatchWavesData extends Record<string, unknown> {
+  /** The round's gate is holding the next wave for a person's release. */
+  held?: boolean;
   /** Open the batch on its own, the way a person reviews one batch at a time. */
   onEnter: () => void;
   onSelect: (nodeId: string) => void;
@@ -835,7 +851,7 @@ export interface BatchWavesData extends Record<string, unknown> {
 
 /** A round's waves: the units it re-opened, then the roster waves it owns. */
 export const BatchWavesGroup = memo<NodeProps>(({ data }) => {
-  const { onEnter, onSelect, probes, retros, revision, rows, started, waveSize } =
+  const { held, onEnter, onSelect, probes, retros, revision, rows, started, waveSize } =
     data as BatchWavesData;
   const { t } = useTranslation('chat');
   const label = useCellLabel();
@@ -858,6 +874,7 @@ export const BatchWavesGroup = memo<NodeProps>(({ data }) => {
       running: t('goalBatch.status.running'),
     },
     started,
+    held,
   );
   return (
     <GroupShell

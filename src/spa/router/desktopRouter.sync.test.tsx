@@ -23,6 +23,7 @@ import SettingsPageSkeleton from '@/components/Skeleton/Settings/Page';
 import ProviderSettingsSkeleton, {
   ProviderDetailSkeleton,
 } from '@/components/Skeleton/Settings/Provider';
+import { getSettingsTabSkeleton } from '@/components/Skeleton/Settings/tabs';
 import { createSurfaceSkeleton } from '@/components/Skeleton/Surface';
 import TasksSkeleton from '@/components/Skeleton/Tasks';
 import TopicsSkeleton from '@/components/Skeleton/Topics';
@@ -83,6 +84,10 @@ async function readRouterSources() {
       'taskWorkspaceRoutes.tsx',
       'workspaceSettingsRoutes.tsx',
       'resourceRoutes.tsx',
+      'agentPageRoutes.tsx',
+      'memoryRoutes.tsx',
+      'onboardingRoute.tsx',
+      'collaborationRoutes.tsx',
     ].map((filename) => readFile(path.join(process.cwd(), 'src/spa/router', filename), 'utf8')),
   );
 }
@@ -199,7 +204,7 @@ describe('desktop router shared definition', () => {
   });
 
   it.each(mainAreaVariants)(
-    '%s exposes project task, goal, dashboard, and acceptance workspaces',
+    '%s exposes project channel, task, goal, dashboard, and acceptance workspaces',
     (_, factory) => {
       const projectRoute = factory().find((route) => route.path === 'project/:projectId');
       const projectIndexRoute = projectRoute?.children?.find((route) => route.index);
@@ -210,6 +215,8 @@ describe('desktop router shared definition', () => {
       expect(projectPaths).toEqual([
         'topic/:topicId?',
         'conversation/:topicId?',
+        'channels/:channelId',
+        'channels/:channelId/settings',
         'tasks',
         'settings/:section?',
         'goals',
@@ -223,6 +230,12 @@ describe('desktop router shared definition', () => {
         );
         expect(matches?.at(-1)?.params.section).toBe(section);
       }
+      // A project's Channel opens inside the project, beside its sidebar.
+      const channelMatches = matchRoutes(
+        createMainAreaRoutes(factory),
+        '/project/project-1/channels/chn_1',
+      );
+      expect(channelMatches?.at(-1)?.params.channelId).toBe('chn_1');
       // The project root is its home page (composer + overview), not a redirect.
       expect(
         (projectIndexRoute?.element as ReactElement<{ to?: string }> | undefined)?.props.to,
@@ -282,7 +295,7 @@ describe('desktop router shared definition', () => {
   );
 
   it.each(mainAreaVariants)(
-    '%s personal devices list and detail use their own skeletons, not the settings form',
+    '%s personal devices list and detail resolve the devices tab skeleton',
     (_, factory) => {
       for (const [url, leaf] of [
         ['/settings/devices', 'devices'],
@@ -296,9 +309,11 @@ describe('desktop router shared definition', () => {
 
         expect(matches?.at(-1)?.route.path).toBe(leaf);
         expect(handle.settingsTab).toBe('devices');
-        expect(handle.meta?.Skeleton).toBeDefined();
-        expect(handle.meta?.Skeleton).not.toBe(SettingsPageSkeleton);
+        // The settings page skeleton picks the devices entry by pathname, so the
+        // explicit routes render the card grid, not the generic settings form.
+        expect(handle.meta?.Skeleton).toBe(SettingsPageSkeleton);
       }
+      expect(getSettingsTabSkeleton('devices')).toBeDefined();
     },
   );
 
@@ -382,7 +397,8 @@ describe('desktop router shared definition', () => {
     expect(electronPaths).not.toContain('/share/page');
     expect(electronPaths).not.toContain('/verify');
     expect(electronPaths).not.toContain('/acceptance');
-    expect(electronPaths).not.toContain('/onboarding');
+    // Electron runs account onboarding after its local first-run setup.
+    expect(electronPaths).toContain('/onboarding');
     expect(electronPaths).toContain('/desktop-onboarding');
   });
 
@@ -737,12 +753,13 @@ describe('desktop router shared definition', () => {
   });
 
   it('keeps business resource and task routes in the shared definition', async () => {
-    const [sharedSource, , , , , , resourceSource] = await readRouterSources();
+    const [sharedSource, , , , , , resourceSource, agentPageSource] = await readRouterSources();
 
     expect(sharedSource).toContain('resourceRoute,');
     expect(resourceSource).toContain('...BusinessResourceRoutes');
     expect(sharedSource).toContain("import('@/routes/(main)/(task-workspace)/_layout')");
-    expect(sharedSource).toContain("import('@/routes/(main)/agent/task/[taskId]')");
+    expect(sharedSource).toContain('...agentPageChildren,');
+    expect(agentPageSource).toContain("import('@/routes/(main)/agent/task/[taskId]')");
     expect(sharedSource).not.toContain("import('@/routes/(main)/task-workspace/_layout')");
     expect(sharedSource).not.toContain("import('@/routes/(main)/tasks/_layout')");
     expect(sharedSource).not.toContain("import('@/routes/(main)/task/_layout')");

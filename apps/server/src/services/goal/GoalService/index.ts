@@ -40,6 +40,7 @@ import {
   followGoalAgent,
   goalOwnerTaskScope,
   graphAs,
+  privatizeProjectGoals,
   reassignUnfinishedTasks,
   resolveTaskAssignee,
   retireNodes,
@@ -48,8 +49,10 @@ import {
   setModel,
   setTaskAgent,
   setTaskModel,
+  setVisibility,
   stopFencedTasks,
   updateRequirement,
+  updateTitle,
 } from './editing';
 import {
   close,
@@ -78,6 +81,7 @@ import {
   collectAcceptances,
   collectAssignees,
   collectDeliveredAt,
+  collectQuotaWaits,
   collectRunHeartbeats,
   graph,
   listEvents,
@@ -197,6 +201,7 @@ export class GoalService {
       collectAcceptances: (...args) => self.collectAcceptances(...args),
       collectAssignees: (...args) => self.collectAssignees(...args),
       collectDeliveredAt: (...args) => self.collectDeliveredAt(...args),
+      collectQuotaWaits: (...args) => self.collectQuotaWaits(...args),
       collectRolloutGate: (...args) => self.collectRolloutGate(...args),
       collectRunHeartbeats: (...args) => self.collectRunHeartbeats(...args),
       consumeCompletedTask: (...args) => self.consumeCompletedTask(...args),
@@ -288,6 +293,7 @@ export class GoalService {
       tickOnce: (...args) => self.tickOnce(...args),
       transitionStatus: (...args) => self.transitionStatus(...args),
       updateRequirement: (...args) => self.updateRequirement(...args),
+      updateTitle: (...args) => self.updateTitle(...args),
       get userId() {
         return self.userId;
       },
@@ -353,6 +359,9 @@ export class GoalService {
   private collectDeliveredAt = (...args: MethodArgs<typeof collectDeliveredAt>) =>
     collectDeliveredAt(this.context, ...args);
 
+  private collectQuotaWaits = (...args: MethodArgs<typeof collectQuotaWaits>) =>
+    collectQuotaWaits(this.context, ...args);
+
   private collectRunHeartbeats = (...args: MethodArgs<typeof collectRunHeartbeats>) =>
     collectRunHeartbeats(this.context, ...args);
 
@@ -381,6 +390,8 @@ export class GoalService {
   updateRequirement = (...args: MethodArgs<typeof updateRequirement>) =>
     updateRequirement(this.context, ...args);
 
+  updateTitle = (...args: MethodArgs<typeof updateTitle>) => updateTitle(this.context, ...args);
+
   setAgent = (...args: MethodArgs<typeof setAgent>) => setAgent(this.context, ...args);
 
   private followGoalAgent = (...args: MethodArgs<typeof followGoalAgent>) =>
@@ -391,6 +402,10 @@ export class GoalService {
   setModel = (...args: MethodArgs<typeof setModel>) => setModel(this.context, ...args);
 
   setTaskModel = (...args: MethodArgs<typeof setTaskModel>) => setTaskModel(this.context, ...args);
+  setVisibility = (...args: MethodArgs<typeof setVisibility>) =>
+    setVisibility(this.context, ...args);
+  privatizeProjectGoals = (...args: MethodArgs<typeof privatizeProjectGoals>) =>
+    privatizeProjectGoals(this.context, ...args);
 
   private resolveTaskAssignee = (...args: MethodArgs<typeof resolveTaskAssignee>) =>
     resolveTaskAssignee(this.context, ...args);

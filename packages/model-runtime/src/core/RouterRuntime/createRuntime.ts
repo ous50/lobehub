@@ -1,10 +1,7 @@
-/**
- * @see https://github.com/lobehub/lobe-chat/discussions/6563
- */
+/** @see https://github.com/lobehub/lobe-chat/discussions/6563 */
 import type { GoogleGenAIOptions } from '@google/genai';
 import type { ModelPricingContext, RouterRuntimeRequestContext } from '@lobechat/types';
 import { AgentRuntimeErrorType } from '@lobechat/types';
-import { createTimingHelpers, getDurationMs } from '../../utils/timing';
 import debug from 'debug';
 import { nanoid } from 'nanoid';
 
@@ -27,6 +24,7 @@ import type {
   GenerateObjectOptions,
   GenerateObjectPayload,
   HandleCreateVideoWebhookPayload,
+  TextToSpeechOptions,
   TextToSpeechPayload,
   VideoPollingRoute,
 } from '../../types';
@@ -36,9 +34,11 @@ import { postProcessModelList } from '../../utils/postProcessModelList';
 import { isImageDecodingRequestError, shouldStopFallbackForError } from '../../utils/routeFallback';
 import { safeParseJSON } from '../../utils/safeParseJSON';
 import { setRuntimeSignatureScopeSource } from '../../utils/signatureScope';
+import { createTimingHelpers, getDurationMs } from '../../utils/timing';
 import { createVideoWithCompletionMode } from '../../utils/videoCompletionMode';
 import type { LobeRuntimeAI } from '../BaseAI';
 import type { ApiType } from './apiTypes';
+import { type RouteAttemptMetadata, withAttemptUsage } from './attemptIdentity';
 import { getChatAttemptObservation, observeChatAttempt } from './chatAttempt';
 import { createChatAttemptFallbackCheck, resolveHoldReasoning } from './chatFallbackHooks';
 import type { ChatStreamFallbackAttempt } from './chatStreamFallback';
@@ -65,18 +65,6 @@ export type {
 
 const log = debug('lobe-model-runtime:router-runtime');
 const { logger: timing } = createTimingHelpers('lobe-server:chat:lobehub:timing');
-
-interface RouteAttemptMetadata {
-  apiType: string;
-  channelId?: string;
-  completionPending?: boolean;
-  durationMs: number;
-  optionIndex: number;
-  providerId: string;
-  routerId?: string;
-  success: boolean;
-  totalOptions: number;
-}
 
 interface RouteAttemptContext {
   allowedApiTypes?: ReadonlySet<ApiType>;
@@ -486,23 +474,21 @@ export const createRouterRuntime = ({
       const requestId = nanoid();
       const { allowedApiTypes, metadata, pricingContext, toolsCount, user } = routeContext;
       const matchedRouter = await this.resolveMatchedRouter(payload.model, pricingContext);
-      const sortedRouterOptions = await this.applySortRouterOptions(
-        matchedRouter,
-        payload.model,
-        this.normalizeRouterOptions(matchedRouter),
-        routeContext,
+      const eligibleRouterOptions = this.normalizeRouterOptions(matchedRouter).filter(
+        (option) =>
+          !allowedApiTypes || allowedApiTypes.has(option.apiType ?? matchedRouter.apiType),
       );
-      const routerOptions = allowedApiTypes
-        ? sortedRouterOptions.filter((option) =>
-            allowedApiTypes.has(option.apiType ?? matchedRouter.apiType),
-          )
-        : sortedRouterOptions;
-
-      if (routerOptions.length === 0) {
+      if (eligibleRouterOptions.length === 0) {
         throw new TypeError(
           `No provider route supports raw audio input for model ${payload.model}`,
         );
       }
+      const routerOptions = await this.applySortRouterOptions(
+        matchedRouter,
+        payload.model,
+        eligibleRouterOptions,
+        routeContext,
+      );
       const firstChannelId = routerOptions[0]?.id;
       const weighted = routerOptions.some((option) => option.weight !== undefined);
       const routeTasks = params.scheduleRouteRequestSettled
@@ -597,11 +583,13 @@ export const createRouterRuntime = ({
           });
           this.attachRouteAttemptMetadata(metadata, {
             apiType: resolvedApiType,
+            attemptId: attempt.attemptId,
             channelId,
             completionPending: true,
             durationMs,
             optionIndex,
             providerId: id,
+            requestId,
             routerId: matchedRouter.id,
             success: true,
             totalOptions: routerOptions.length,
@@ -858,10 +846,12 @@ export const createRouterRuntime = ({
 
           this.attachRouteAttemptMetadata(metadata, {
             apiType: resolvedApiType,
+            attemptId: attemptContext.attemptId,
             channelId,
             durationMs: Date.now() - attemptContext.startedAt,
             optionIndex: index,
             providerId: id,
+            requestId,
             routerId: matchedRouter.id,
             success: true,
             totalOptions,
@@ -1171,7 +1161,7 @@ export const createRouterRuntime = ({
     async generateObject(payload: GenerateObjectPayload, options?: GenerateObjectOptions) {
       return this.runWithFallback(
         payload.model,
-        (runtime) => runtime.generateObject!(payload, options),
+        (runtime, attempt) => runtime.generateObject!(payload, withAttemptUsage(options, attempt)),
         {
           metadata: options?.metadata,
           method: 'generateObject',
@@ -1185,7 +1175,7 @@ export const createRouterRuntime = ({
     async embeddings(payload: EmbeddingsPayload, options?: EmbeddingsOptions) {
       return this.runWithFallback(
         payload.model,
-        (runtime) => runtime.embeddings!(payload, options),
+        (runtime, attempt) => runtime.embeddings!(payload, withAttemptUsage(options, attempt)),
         {
           metadata: options?.metadata,
           method: 'embeddings',
@@ -1195,10 +1185,10 @@ export const createRouterRuntime = ({
       );
     }
 
-    async textToSpeech(payload: TextToSpeechPayload, options?: EmbeddingsOptions) {
+    async textToSpeech(payload: TextToSpeechPayload, options?: TextToSpeechOptions) {
       return this.runWithFallback(
         payload.model,
-        (runtime) => runtime.textToSpeech!(payload, options),
+        (runtime, attempt) => runtime.textToSpeech!(payload, withAttemptUsage(options, attempt)),
         {
           metadata: options?.metadata,
           method: 'textToSpeech',
@@ -1211,7 +1201,7 @@ export const createRouterRuntime = ({
     async transcribe(payload: ASRPayload, options?: ASROptions) {
       return this.runWithFallback(
         payload.model,
-        (runtime) => runtime.transcribe!(payload, options),
+        (runtime, attempt) => runtime.transcribe!(payload, withAttemptUsage(options, attempt)),
         { metadata: options?.metadata, method: 'transcribe', user: options?.user },
       );
     }

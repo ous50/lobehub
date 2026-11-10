@@ -4,9 +4,18 @@ import {
   appendAttachedFilesToPrompt,
   collectHeteroAttachedFiles,
   isLocalHeterogeneousType,
+  resolveDispatchedClaudeCodeEntrypoint,
 } from '@lobechat/heterogeneous-agents';
-import { formatContextSelections, formatPageSelections } from '@lobechat/prompts';
-import { applyTopicModelToHeterogeneousProvider, buildHeteroExecArgs } from '@lobechat/types';
+import {
+  CHANNEL_INSTRUCTIONS,
+  formatContextSelections,
+  formatPageSelections,
+} from '@lobechat/prompts';
+import {
+  applyTopicModelToHeterogeneousProvider,
+  buildHeteroExecArgs,
+  RequestTrigger,
+} from '@lobechat/types';
 import debug from 'debug';
 
 import { signHeteroOperationJWT } from '@/libs/trpc/utils/internalJwt';
@@ -43,7 +52,9 @@ export const prepareHeteroRun = async (
     | 'prompt'
     | 'shareGate'
     | 'topicId'
+    | 'userMessageId'
     | 'userMessageMetadata'
+    | 'trigger'
   >,
   input: Pick<
     HeteroDispatchInput,
@@ -53,6 +64,7 @@ export const prepareHeteroRun = async (
     | 'pinnedHeterogeneousTopicModel'
     | 'runAttachments'
     | 'selfMessageIds'
+    | 'reservedOperationId'
   >,
   operationId: string,
 ) => {
@@ -70,17 +82,26 @@ export const prepareHeteroRun = async (
   const heteroService = new HeterogeneousAgentService(deps.db, deps.userId, {
     workspaceId: deps.workspaceId,
   });
+  const isChannelOperation = ctx.trigger === 'channel' && input.reservedOperationId === operationId;
   const resumeSessionId = await heteroService.getHeterogeneousResumeSessionId(topicId);
   // Sign an operation-scoped JWT so the CLI can authenticate against
   // heteroIngest / heteroFinish without full user credentials.
   let operationJwt: string;
   try {
     operationJwt = await signHeteroOperationJWT({
-      // A `/goal` run also gets `goal:manage` so it can create the goal the agent
-      // supervises; the server still derives the agent and topic from this
-      // operation, never from the CLI. A Task run also gets `acceptance:evidence`
-      // for its own verification round.
-      capabilities: heteroOperationCapabilities(prompt, { taskId: operationTaskId }),
+      // A run the user sent also gets `goal:manage` so it can create
+      // the goal the agent supervises; the server still derives the agent and
+      // topic from this operation, never from the CLI. A Task run also gets
+      // `acceptance:evidence` for its own verification round.
+      capabilities: heteroOperationCapabilities(prompt, {
+        channel: isChannelOperation,
+        taskId: operationTaskId,
+        // A scheduled run replays the user's own message off history, so it has
+        // no fresh user row; server-started `chat` deliveries have none either.
+        userTurn:
+          (ctx.trigger === RequestTrigger.Chat && !!ctx.userMessageId) ||
+          ctx.trigger === RequestTrigger.Scheduled,
+      }),
       operationId,
       userId: deps.userId,
       workspaceId: deps.workspaceId,
@@ -209,7 +230,13 @@ export const prepareHeteroRun = async (
       ? formatPageSelections(pageSelections)
       : undefined;
   const agentSystemContext = withConversationGoalPrompt(
-    joinSystemContext(providerContext, projectContext, viewedTaskContext, selectionContext),
+    joinSystemContext(
+      providerContext,
+      projectContext,
+      viewedTaskContext,
+      selectionContext,
+      isChannelOperation ? CHANNEL_INSTRUCTIONS : undefined,
+    ),
     prompt,
   );
   const systemContext = buildCloudHeteroContext({
@@ -253,6 +280,13 @@ export const prepareHeteroRun = async (
   const heteroParams = {
     agentType: heteroType,
     assistantMessageId,
+    // The one setting that travels from the agent's env to wherever the run
+    // lands: forwarding the whole env would let an agent's author set arbitrary
+    // variables on a member's device.
+    claudeCodeEntrypoint:
+      heteroType === 'claude-code' && heterogeneousProvider?.type === heteroType
+        ? resolveDispatchedClaudeCodeEntrypoint(heterogeneousProvider.env)
+        : undefined,
     githubToken,
     imageList: heteroImageList,
     jwt: operationJwt,

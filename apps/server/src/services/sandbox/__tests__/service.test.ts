@@ -3,7 +3,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FileService } from '@/server/services/file';
 import type { MarketService } from '@/server/services/market';
 
+import type { SandboxInitialization } from '../environmentInit';
 import type { SandboxProvider, SandboxProviderKind } from '../types';
+
+const pythonSandboxCapabilities = (): SandboxProvider['capabilities'] => ({
+  backgroundCommands: true,
+  exportFile: true,
+  files: true,
+  languages: ['python'],
+  persistentSession: true,
+  shell: true,
+  skillScripts: true,
+});
+
+const uploadServiceOptions = (fileService: FileService) => ({
+  fileService,
+  marketService: {} as MarketService,
+  topicId: 'topic-1',
+  userId: 'user-1',
+});
 
 describe('normalizeSandboxCommandResult', () => {
   it('preserves recreation when the command fails inside a successful response', async () => {
@@ -57,22 +75,14 @@ describe('SandboxMiddlewareService', () => {
   });
 
   describe('initializing from an environment', () => {
-    const capabilities = {
-      backgroundCommands: true,
-      exportFile: true,
-      files: true,
-      languages: ['python'],
-      persistentSession: true,
-      shell: true,
-      skillScripts: true,
-    };
+    const capabilities = pythonSandboxCapabilities();
     const init = {
       environmentId: 'env-1',
       name: 'Hello',
       sources: [{ url: 'https://github.com/octocat/Hello-World' }],
     };
 
-    const serviceWith = async (stdout: string) => {
+    const serviceWith = async (stdout: string, initialization: SandboxInitialization = init) => {
       const { SandboxMiddlewareService: TestSandboxMiddlewareService } = await import('../service');
       const callTool = vi.fn(async (name: string, params: Record<string, unknown>) =>
         String(params.command).includes('__lobe_environment_ran')
@@ -87,7 +97,7 @@ describe('SandboxMiddlewareService', () => {
       } satisfies SandboxProvider;
       const service = new TestSandboxMiddlewareService(provider, {
         marketService: {} as MarketService,
-        sandboxInitialization: init,
+        sandboxInitialization: initialization,
         topicId: 'topic-1',
         userId: 'user-1',
       });
@@ -156,6 +166,57 @@ describe('SandboxMiddlewareService', () => {
 
       expect((result.result as { stdout: string }).stdout).toBe('ran runCommand');
     });
+
+    it("exports the environment's variables into every shell command the conversation runs", async () => {
+      const { callTool, service } = await serviceWith('', {
+        ...init,
+        env: { LOBEHUB_ADMIN_URL: 'https://admin.example.com' },
+      });
+
+      await service.callTool('runCommand', { command: 'printenv LOBEHUB_ADMIN_URL' });
+      await service.callTool('execScript', { command: 'node admin.js' });
+      await service.callTool('runCommand', { background: true, command: 'claude -p hi' });
+      await service.callTool('listFiles', { path: '.' });
+
+      const [initCall, ...calls] = callTool.mock.calls;
+      expect(String(initCall[1].command)).toContain('__lobe_environment_ran');
+      expect(calls.map(([name, params]) => [name, params])).toEqual([
+        [
+          'runCommand',
+          {
+            command:
+              "export LOBEHUB_ADMIN_URL='https://admin.example.com'\nprintenv LOBEHUB_ADMIN_URL",
+          },
+        ],
+        [
+          'execScript',
+          { command: "export LOBEHUB_ADMIN_URL='https://admin.example.com'\nnode admin.js" },
+        ],
+        [
+          'runCommand',
+          {
+            background: true,
+            command: "export LOBEHUB_ADMIN_URL='https://admin.example.com'\nclaude -p hi",
+          },
+        ],
+        ['listFiles', { path: '.' }],
+      ]);
+    });
+
+    it('exports the variables of an environment with nothing to clone or set up, without an initializer', async () => {
+      const { callTool, service } = await serviceWith('', {
+        env: { REGION: 'us' },
+        environmentId: 'env-1',
+        name: 'Vars only',
+        sources: [],
+      });
+
+      await service.callTool('runCommand', { command: 'echo $REGION' });
+
+      expect(callTool.mock.calls).toEqual([
+        ['runCommand', { command: "export REGION='us'\necho $REGION" }],
+      ]);
+    });
   });
 
   it('uploads provider exports through the shared file record flow', async () => {
@@ -165,15 +226,7 @@ describe('SandboxMiddlewareService', () => {
       success: true,
     }));
     const provider = {
-      capabilities: {
-        backgroundCommands: true,
-        exportFile: true,
-        files: true,
-        languages: ['python'],
-        persistentSession: true,
-        shell: true,
-        skillScripts: true,
-      },
+      capabilities: pythonSandboxCapabilities(),
       callTool: vi.fn(),
       exportFileToUploadUrl,
       kind: 'onlyboxes',
@@ -191,12 +244,7 @@ describe('SandboxMiddlewareService', () => {
       })),
     } as unknown as FileService;
 
-    const service = new TestSandboxMiddlewareService(provider, {
-      fileService,
-      marketService: {} as MarketService,
-      topicId: 'topic-1',
-      userId: 'user-1',
-    });
+    const service = new TestSandboxMiddlewareService(provider, uploadServiceOptions(fileService));
 
     const result = await service.exportAndUploadFile('/workspace/result.csv', 'result.csv');
 
@@ -233,15 +281,7 @@ describe('SandboxMiddlewareService', () => {
       success: true,
     }));
     const provider = {
-      capabilities: {
-        backgroundCommands: true,
-        exportFile: true,
-        files: true,
-        languages: ['python'],
-        persistentSession: true,
-        shell: true,
-        skillScripts: true,
-      },
+      capabilities: pythonSandboxCapabilities(),
       callTool: vi.fn(),
       exportFileToUploadUrl,
       kind: 'onlyboxes',
@@ -256,12 +296,7 @@ describe('SandboxMiddlewareService', () => {
       getFileMetadata: vi.fn(async () => ({ contentLength: 42, contentType: 'text/csv' })),
     } as unknown as FileService;
 
-    const service = new TestSandboxMiddlewareService(provider, {
-      fileService,
-      marketService: {} as MarketService,
-      topicId: 'topic-1',
-      userId: 'user-1',
-    });
+    const service = new TestSandboxMiddlewareService(provider, uploadServiceOptions(fileService));
 
     const result = await service.exportAndUploadFile('/workspace/result.csv', 'result.csv', {
       storageName: 'deadbeefdeadbeef-result.csv',
@@ -290,15 +325,7 @@ describe('SandboxMiddlewareService', () => {
 
   it('normalizes provider export failures before storage metadata is read', async () => {
     const provider = {
-      capabilities: {
-        backgroundCommands: true,
-        exportFile: true,
-        files: true,
-        languages: ['python'],
-        persistentSession: true,
-        shell: true,
-        skillScripts: true,
-      },
+      capabilities: pythonSandboxCapabilities(),
       callTool: vi.fn(),
       exportFileToUploadUrl: vi.fn(async () => ({
         error: { message: 'no such file', name: 'not_found' },
@@ -314,12 +341,7 @@ describe('SandboxMiddlewareService', () => {
       getFileMetadata: vi.fn(),
     } as unknown as FileService;
 
-    const service = new SandboxMiddlewareService(provider, {
-      fileService,
-      marketService: {} as MarketService,
-      topicId: 'topic-1',
-      userId: 'user-1',
-    });
+    const service = new SandboxMiddlewareService(provider, uploadServiceOptions(fileService));
 
     const result = await service.exportAndUploadFile('/workspace/missing.txt', 'missing.txt');
 

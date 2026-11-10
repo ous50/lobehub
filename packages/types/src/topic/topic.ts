@@ -35,6 +35,12 @@ export type TopicQuerySortBy = 'updatedAt' | 'status';
 
 export interface GroupedTopic {
   children: ChatTopic[];
+  /**
+   * Set on a folder group only when another folder group shows the same path
+   * on a different machine, so the renderer can name the device that tells
+   * them apart.
+   */
+  deviceId?: string;
   id: string;
   title?: string;
 }
@@ -50,6 +56,12 @@ export interface TopicUserMemoryExtractRunState {
 
 export interface ChatTopicBotContext {
   applicationId: string;
+  /**
+   * Whether the sender, not being the owner, is on the owner's device list
+   * (`settings.devicePolicy = 'allowlist'` + `settings.deviceAllowFrom`).
+   * Computed with `isOwner` in `buildBotContext`; absent means not trusted.
+   */
+  isDeviceTrusted?: boolean;
   /**
    * Whether the message sender is the bot owner. Computed at the bot
    * router/dispatcher entry point as
@@ -129,6 +141,14 @@ export interface ChatTopicMetadata {
   boundDeviceId?: string;
   cronJobId?: string;
   /**
+   * The conversation's device was chosen explicitly for it (the composer's
+   * picker preset, a project directory, or `lh topic send --new --device`), not
+   * picked automatically by an `auto` agent. Later turns honour that choice
+   * instead of picking a fresh online device, because the caller was told the
+   * work stays on that machine.
+   */
+  deviceBindingPinned?: boolean;
+  /**
    * Set on a topic created by editing and resending a user message of a
    * runtime whose native history cannot be rewound (Codex). The topic holds a
    * copy of the source ancestry but no native session, so a fresh local run
@@ -160,6 +180,8 @@ export interface ChatTopicMetadata {
   editingGroupId?: string;
   /** Restored-history tail used as the source message for eval attempt threads. */
   evalHistoryTailMessageId?: string;
+  /** Immutable initial Memory hashes keyed by run/topic/thread attempt ID, including empty fixtures. */
+  evalMemoryFixtures?: Record<string, string>;
   /**
    * Scoped pointer to the currently active assistant message for a running
    * heterogeneous agent operation. Includes `operationId` so cold-start
@@ -608,7 +630,7 @@ export const chatTopicMetadataUpdateSchema = z.object({
   heteroSessionBindingKeyByWorkingDirectory: z.record(z.string(), z.string()).optional(),
   heteroSessionId: z.string().optional(),
   heteroSessionIdByWorkingDirectory: z.record(z.string(), z.string()).optional(),
-  heteroSpeed: z.enum(['default', 'fast']).optional(),
+  heteroSpeed: z.enum(['default', 'normal', 'fast', 'ultrafast']).optional(),
   model: z.string().optional(),
   onboardingFeedback: z
     .object({
@@ -726,6 +748,12 @@ export interface ChatTopic extends Omit<BaseDataModel, 'meta'> {
   favorite?: boolean;
   /** First user message (sliced server-side, used as preview fallback). */
   firstUserMessage?: string | null;
+  /**
+   * Whether a goal was planned in this conversation (`goals.subject_type =
+   * 'topic'`). Only the per-agent sidebar list and the project topic list
+   * select it; absent elsewhere.
+   */
+  hasGoal?: boolean;
   historySummary?: string;
   /** Total message count for the topic. */
   messageCount?: number | null;
@@ -811,6 +839,12 @@ export interface CreateTopicParams {
   metadata?: ChatTopicMetadata;
   /** Pinned model snapshot for the new topic (see `ChatTopic.model`). */
   model?: string;
+  /**
+   * Bind the new topic to a project without a directory (conversation-only).
+   * Ignored when `projectWorkingDirectoryId` resolves — the directory carries
+   * its own project.
+   */
+  projectId?: string;
   /**
    * Bind the new topic to a project working directory. The server resolves the
    * directory and pins its project, device and paths onto the topic — the same

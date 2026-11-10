@@ -1,5 +1,6 @@
 'use client';
 
+import { displayPlanTier } from '@lobechat/heterogeneous-agents/quota';
 import { ClaudeCode, Codex, Kimi } from '@lobehub/icons';
 import {
   ActionIcon,
@@ -24,7 +25,12 @@ import { usageTextColor } from '@/features/DeviceManager/DeviceHealth/shared';
 import { UsageBar } from '@/features/DeviceManager/DeviceHealth/UsageMeter';
 import { type QuotaAccount, useAgentQuotaStore } from '@/store/agentQuota';
 
-import { type AccountStatus, deriveAccountView, type SubscriptionProvider } from './accountView';
+import {
+  type AccountStatus,
+  deriveAccountView,
+  meterWindows,
+  type SubscriptionProvider,
+} from './accountView';
 
 /** Column widths shared by {@link AccountRow} and {@link AccountListHeader}. */
 export const COLUMN_WIDTH = {
@@ -83,6 +89,10 @@ const PROVIDER_META: Record<
   'codex': { icon: (size) => <Codex.Avatar size={size} />, name: 'Codex' },
   'kimi-code': { icon: (size) => <Kimi.Avatar size={size} />, name: 'Kimi Code' },
 };
+
+/** The provider's avatar, as the list row draws it. */
+export const providerAvatar = (provider: SubscriptionProvider, size: number) =>
+  PROVIDER_META[provider].icon(size);
 
 export const PROVIDER_NAME = Object.fromEntries(
   Object.entries(PROVIDER_META).map(([key, meta]) => [key, meta.name]),
@@ -182,6 +192,7 @@ const AccountRow = ({ account, active, onOpen }: AccountRowProps) => {
   const view = deriveAccountView(account, readings, Date.now());
   const meta = PROVIDER_META[account.provider];
   const name = accountDisplayName(account);
+  const plan = displayPlanTier(account);
   // With a label set, the email moves to the subtitle so the account stays identifiable.
   const subtitle = [meta.name, account.label ? account.email : undefined]
     .filter(Boolean)
@@ -306,9 +317,9 @@ const AccountRow = ({ account, active, onOpen }: AccountRowProps) => {
         ellipsis
         fontSize={13}
         style={{ flex: 'none', width: COLUMN_WIDTH.plan }}
-        type={account.planTier ? undefined : 'secondary'}
+        type={plan ? undefined : 'secondary'}
       >
-        {account.planTier || '—'}
+        {plan || '—'}
       </Text>
 
       <Flexbox
@@ -325,14 +336,17 @@ const AccountRow = ({ account, active, onOpen }: AccountRowProps) => {
 
       {/* Both windows stacked in one column, so the pair reads as one quota. */}
       <Flexbox gap={6} style={{ flex: 'none', width: COLUMN_WIDTH.quota }}>
-        <WindowMeter
-          label={t('subscriptionAccounts.meter.session')}
-          value={view.session?.usedPercent}
-        />
-        <WindowMeter
-          label={t('subscriptionAccounts.meter.weekly')}
-          value={view.weekly?.usedPercent}
-        />
+        {meterWindows(view).map((key) => (
+          <WindowMeter
+            key={key}
+            value={view[key]?.usedPercent}
+            label={
+              key === 'session'
+                ? t('subscriptionAccounts.meter.session')
+                : t('subscriptionAccounts.meter.weekly')
+            }
+          />
+        ))}
       </Flexbox>
 
       <Flexbox
